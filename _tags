@@ -1,0 +1,3 @@
+"templates": include
+<**/*>: package(osdp)
+<**/*.cmx> and not "seal.cmx": for-pack(Seal)

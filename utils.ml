@@ -1,0 +1,85 @@
+(*
+ * OSDP (OCaml SDP) is an OCaml frontend library to semi-definite
+ * programming (SDP) solvers.
+ * Copyright (C) 2012, 2014  P. Roux and P.L. Garoche
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *)
+
+let pp_list ~sep f fmt l =
+  let rec aux fmt = function
+    | []   -> ()
+    | [e]  -> f fmt e
+    | x::r -> Format.fprintf fmt "%a%(%)%a" f x sep aux r in
+  aux fmt l
+
+let pp_array ~sep f fmt a =
+  if Array.length a >= 1 then begin
+    Format.fprintf fmt "%a" f a.(0);
+    for i = 1 to Array.length a - 1 do
+      Format.fprintf fmt "%(%)%a" sep f a.(i)
+    done
+  end
+
+let pp_matrix ~begl ~endl ~sepl ~sepc f =
+  let print_line fmt l =
+    Format.fprintf fmt "%(%)%a%(%)" begl (pp_array ~sep:sepc f) l endl in
+  pp_array ~sep:sepl print_line
+
+(* smallest positive subnormal *)
+let epsilon_under_float = min_float *. epsilon_float  (* 0x1p-1074 *)
+(* largest subnormal *)
+let max_subnormal = min_float -. epsilon_under_float
+                                         
+(* Assuming f1 <= f2, [consecutive_float f1 F2] returns true iff there
+   is no float f (normal or subnormal) such that f1 < f < f2. *)
+let consecutive_float f1 f2 =
+  (* Same assuming also 0 <= f1 <= f2. *)
+  let consecutive_float_pos f1 f2 =
+    match classify_float f1, classify_float f2 with
+    | FP_nan, _ | _, FP_nan -> assert false  (* f1 <= f2 is false *)
+    | FP_infinite, FP_infinite -> true
+    | FP_infinite, _ -> false
+    | _, FP_infinite -> f1 = max_float
+    | _, FP_zero -> true
+    | FP_zero, _ -> f2 = epsilon_under_float
+    | FP_normal, FP_subnormal -> assert false  (* f1 < f2 is false *)
+    | FP_subnormal, FP_normal -> f1 = max_subnormal && f2 = min_float
+    | FP_subnormal, FP_subnormal -> f2 -. f1 <= epsilon_under_float
+    | FP_normal, FP_normal ->
+       let (f1, e1), (f2, e2) = frexp f1, frexp f2 in
+       (e1 = e2 && f2 -. f1 <= epsilon_float /. 2.)
+       || (e1 = e2 - 1 && f1 = 1.0 -. epsilon_float /. 2. && f2 = 0.5) in
+  if f1 >= 0. then consecutive_float_pos f1 f2
+  else if f2 <= 0. then consecutive_float_pos ( -. f2) ( -. f1)
+  else false  (* f1 < 0 < f2 *)
+
+let profile f =
+  let fnbeg = Filename.temp_file "beg" "" in
+  let fnend = Filename.temp_file "end" "" in
+  let _ = Sys.command ("date '+%s.%N' > " ^ fnbeg) in
+  let r = f () in
+  let _ = Sys.command ("date '+%s.%N' > " ^ fnend) in
+  let t fn =
+    let ic = open_in fn in
+    let t = float_of_string (input_line ic) in
+    close_in ic;
+    Sys.remove fn;
+    t in
+  r, t fnend -. t fnbeg
+
+let opt_map f opt = match opt with
+  | None -> None
+  | Some x -> Some (f x)
