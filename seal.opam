@@ -1,6 +1,6 @@
 opam-version: "2.0"
 name: "seal"
-version: "0.1"
+version: "0.2"
 synopsis: "Seal library - System Analysis Library"
 maintainer: "pierre-loic.garoche@enac.fr"
 authors: "Pierre-Loic Garoche"
