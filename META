@@ -1,5 +1,0 @@
-description = "SystEm Analysis Library"
-version = "0.1"
-requires = "osdp,num"
-archive(byte) = "seal.cma"
-archive(native) = "seal.cmxa"

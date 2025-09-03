@@ -38,11 +38,14 @@ let pp_matrix ~begl ~endl ~sepl ~sepc f =
     Format.fprintf fmt "%(%)%a%(%)" begl (pp_array ~sep:sepc f) l endl in
   pp_array ~sep:sepl print_line
 
+(* Not used yet
+
+
 (* smallest positive subnormal *)
 let epsilon_under_float = min_float *. epsilon_float  (* 0x1p-1074 *)
 (* largest subnormal *)
 let max_subnormal = min_float -. epsilon_under_float
-                                         
+   
 (* Assuming f1 <= f2, [consecutive_float f1 F2] returns true iff there
    is no float f (normal or subnormal) such that f1 < f < f2. *)
 let consecutive_float f1 f2 =
@@ -65,7 +68,8 @@ let consecutive_float f1 f2 =
   if f1 >= 0. then consecutive_float_pos f1 f2
   else if f2 <= 0. then consecutive_float_pos ( -. f2) ( -. f1)
   else false  (* f1 < 0 < f2 *)
-
+*)
+                    
 let profile f =
   let fnbeg = Filename.temp_file "beg" "" in
   let fnend = Filename.temp_file "end" "" in

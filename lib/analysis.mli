@@ -70,5 +70,5 @@ module type S = sig
     (poly_template_t * bound_t) array      
 end
   
-module Make (Dynsys: Dynsys.S) : S
+module Make (_ : Dynsys.S) : S
 

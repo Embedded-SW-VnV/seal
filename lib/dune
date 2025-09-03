@@ -1,0 +1,7 @@
+(include_subdirs unqualified)
+(library
+ (name seal)
+ (public_name seal)
+ (libraries osdp)
+ (wrapped true)
+)

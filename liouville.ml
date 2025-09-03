@@ -1,2 +1,0 @@
-let template sys deg = 
-()                     

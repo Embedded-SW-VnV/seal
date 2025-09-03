@@ -112,11 +112,12 @@ module Make (Dynsys: Dynsys.S) = (
 	   ))
 	res.postfixpoint
 	
-    let pp_result fmt res = pp_guarded_result (fun fmt _ -> ()) fmt res
+    let pp_result fmt res = pp_guarded_result (fun _fmt _ -> ()) fmt res
 
     (* (\* Linear systems analyses *\) *)
     (* module QuadTemplates = QuadraticTemplates.Make(Dynsys) *)
-      
+
+    (*
     let build_result conv (status, result_opt) =
       { 
 	status = status;
@@ -125,6 +126,7 @@ module Make (Dynsys: Dynsys.S) = (
 	  | None -> []
 	  | Some (template, values) -> [((), [[conv template]])]
       }
+       *)
 
   (* let round sys = build_result Dynsys.poly_of_quadratic_form (QuadTemplates.round sys) *)
   (* let shape sys = build_result Dynsys.poly_of_quadratic_form (QuadTemplates.shape sys) *)
@@ -166,11 +168,11 @@ module Make (Dynsys: Dynsys.S) = (
   type poly_template_t = Dynsys.Poly.t
   type bound_t = Minf | Pinf | Fin of Dynsys.coeff
       
-  let narrow_linsys lin_sys templates = assert false
+  let narrow_linsys _lin_sys _templates = assert false
 
   (* val narrow_piecewise_linsys: Dynsys.poly_t -> (poly_template_t *
      bound_t) array -> (poly_template_t * bound_t) array *)
       
-  let narrow_sys sys templates = assert false
+  let narrow_sys _sys _templates = assert false
 
   end)
