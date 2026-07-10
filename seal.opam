@@ -8,6 +8,7 @@ license: "LGPL"
 depends: [
   "dune" {>= "3.0"}
   "osdp"
+  "num"
 ]
 build: [
   ["dune" "subst"] {pinned}
