@@ -68,8 +68,7 @@ module type S = sig
 end
 
   
-module Make (Dynsys: Dynsys.S) = (
-  struct
+module Make (Dynsys: Dynsys.S) : (S with module Dynsys = Dynsys) = struct
     module Dynsys = Dynsys
     module Poly = Dynsys.Poly
     module Mat = Dynsys.Mat
@@ -116,17 +115,15 @@ module Make (Dynsys: Dynsys.S) = (
 
     (* (\* Linear systems analyses *\) *)
     (* module QuadTemplates = QuadraticTemplates.Make(Dynsys) *)
-
-    (*
-    let build_result conv (status, result_opt) =
-      { 
-	status = status;
-	postfixpoint = 
-	  match result_opt with
-	  | None -> []
-	  | Some (template, values) -> [((), [[conv template]])]
-      }
-       *)
+      
+  (*   let build_result conv (status, result_opt) = *)
+  (*     {  *)
+  (*       status = status; *)
+  (*       postfixpoint =  *)
+  (*         match result_opt with *)
+  (*         | None -> [] *)
+  (*         | Some (template, values) -> [((), [[conv template]])] *)
+  (*     } *)
 
   (* let round sys = build_result Dynsys.poly_of_quadratic_form (QuadTemplates.round sys) *)
   (* let shape sys = build_result Dynsys.poly_of_quadratic_form (QuadTemplates.shape sys) *)
@@ -175,4 +172,4 @@ module Make (Dynsys: Dynsys.S) = (
       
   let narrow_sys _sys _templates = assert false
 
-  end)
+  end 

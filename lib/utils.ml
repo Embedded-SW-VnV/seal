@@ -45,7 +45,7 @@ let pp_matrix ~begl ~endl ~sepl ~sepc f =
 let epsilon_under_float = min_float *. epsilon_float  (* 0x1p-1074 *)
 (* largest subnormal *)
 let max_subnormal = min_float -. epsilon_under_float
-   
+                                         
 (* Assuming f1 <= f2, [consecutive_float f1 F2] returns true iff there
    is no float f (normal or subnormal) such that f1 < f < f2. *)
 let consecutive_float f1 f2 =
