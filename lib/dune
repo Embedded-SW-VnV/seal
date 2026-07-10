@@ -2,6 +2,6 @@
 (library
  (name seal)
  (public_name seal)
- (libraries osdp)
+ (libraries osdp num)
  (wrapped true)
 )
