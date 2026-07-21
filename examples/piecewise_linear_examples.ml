@@ -93,5 +93,50 @@ let example1_pierre : Sys.lin_t =
     r_g = Some (c 30.);
   }
 
+(* The paper's "running example" (.../examples/runningexample.m): a 4-mode
+   piecewise-*affine* system (each mode has a nonzero translation offset
+   b_i, unlike every other example in this file) over (x,y) with a bounded
+   input u in [-3,3], read fresh every loop iteration in the source
+   pseudocode. Ported using Matlab's own encoding -- u folded in as an
+   extra frozen state coordinate (row [0,0,1], u'=u), rather than the
+   genuine per-step Dynsys.input treatment used for Example1Pierre above --
+   because that's the only encoding Analysis.piecewise_lin (deliberately
+   scoped to di=0, matching invariant.m itself) can run at all, and because
+   reproducing the paper's own k-inductive result requires matching its own
+   modeling choice, not a stronger one.
+
+   Dynsys.lin_t has no way to represent a nonzero offset at all (see
+   PiecewiseQuadraticTemplates's scope note), so the b_i are carried
+   separately in [running_example_offsets], passed to
+   [Analysis.piecewise_lin] via its [?offsets] parameter. Consequently:
+   this system must NOT be run through round/shape/affine/liouville_method
+   or cast via linear_to_poly/poly_to_linear -- all of those would silently
+   drop the offset and analyze the wrong (through-the-origin) system. It's
+   deliberately kept out of [examples] below for that reason. *)
+let running_example : Sys.lin_t =
+  let g a b = affine_guard (carr a) (c b) in
+  let u_bounds = [ g [| 0.; 0.; 1. |] 3.; g [| 0.; 0.; -1. |] 3. ] in
+  let guard1 = u_bounds @ [ g [| -9.; 7.; 6. |] 5.; g [| -4.; 8.; -8. |] 4. ] in
+  let guard2 = u_bounds @ [ g [| -9.; 7.; 6. |] 5.; g [| 4.; -8.; 8. |] (-4.) ] in
+  let guard3 = u_bounds @ [ g [| -4.; 8.; -8. |] 4.; g [| 9.; -7.; -6. |] (-5.) ] in
+  let guard4 = u_bounds @ [ g [| 9.; -7.; -6. |] (-5.); g [| 4.; -8.; 8. |] (-4.) ] in
+  let a1 = Mat.of_list_list (crows [ [ 0.4217; 0.1077; 0.5661 ]; [ 0.1162; 0.2785; 0.2235 ]; [ 0.; 0.; 1. ] ]) in
+  let a2 = Mat.of_list_list (crows [ [ 0.4763; 0.0145; 0.9033 ]; [ 0.1315; 0.3291; 0.1459 ]; [ 0.; 0.; 1. ] ]) in
+  let a3 = Mat.of_list_list (crows [ [ 0.2618; 0.1177; 0.0868 ]; [ 0.4014; 0.4161; 0.6320 ]; [ 0.; 0.; 1. ] ]) in
+  let a4 = Mat.of_list_list (crows [ [ 0.3874; 0.0771; 0.5153 ]; [ 0.2430; 0.4028; 0.4790 ]; [ 0.; 0.; 1. ] ]) in
+  {
+    Sys.df = 3;
+    di = 0;
+    map = [ (guard1, a1); (guard2, a2); (guard3, a3); (guard4, a4) ];
+    (* Matlab's I = [-9,9] x [-9,9] x [-3,3]; approximated by its largest
+       axis-aligned inscribed ball (radius = tightest half-width, on u) *)
+    init = (carr [| 0.; 0.; 0. |], c 3.);
+    input = None;
+    r_g = Some (c 13.); (* ~ sqrt(9^2+9^2+3^2), a loose outer bound *)
+  }
+
+let running_example_offsets : Sys.coeff array array =
+  [| carr [| 0.; -1.; 0. |]; carr [| 0.; 9.; 0. |]; carr [| -4.; 4.; 0. |]; carr [| 10.; 7.; 0. |] |]
+
 let examples : (string * Sys.lin_t) list =
   [ ("MignoneInvariance1", mignone_invariance_1); ("Example1Pierre", example1_pierre) ]

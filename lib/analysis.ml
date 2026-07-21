@@ -26,6 +26,13 @@ module type S = sig
   val shape: Dynsys.lin_t -> analysis_result_t
   val affine: Dynsys.lin_t -> analysis_result_t
 
+  val piecewise_lin:
+    ?offsets:Dynsys.coeff array array ->
+    ?solver:Osdp.Sdp.solver ->
+    int ->
+    Dynsys.lin_t ->
+    Dynsys.quad_guard_t guarded_analysis_result_t
+
   val prop_driven_sos_lyap:
     ?domain_restriction:Dynsys.basic_semialgebraic_t ->
     ?solver:Osdp.Sdp.solver ->
@@ -116,10 +123,37 @@ module Make (Dynsys: Dynsys.S) = struct
     let shape sys = build_result Dynsys.Cast.poly_of_quadratic_form (QuadTemplates.shape sys)
     let affine sys = build_result Dynsys.Cast.poly_of_quadratic_form (QuadTemplates.affine sys)
   
-  (* (\* Piecewise linear systems *\) *)
-  (* module PQuadTemplates = PiecewiseQuadraticTemplates.Make(Dynsys)     *)
-  (* let piecewise_lin k linsys = PQuadTemplates.piecewise_lin k linsys  *)
-    
+  (* Piecewise linear systems *)
+  module PQuadTemplates = PiecewiseQuadraticTemplates.Make(Dynsys)
+
+  let piecewise_lin
+      ?offsets
+      ?solver
+      (k : int)
+      (sys : Dynsys.lin_t) : Dynsys.quad_guard_t guarded_analysis_result_t =
+    let status, result_opt = PQuadTemplates.invariant ?offsets ?solver k sys in
+    let cells = Array.of_list sys.Dynsys.map in
+    match result_opt with
+    | None -> { status; postfixpoint = [] }
+    | Some r ->
+      let postfixpoint =
+        Array.to_list
+          (Array.mapi
+             (fun i path ->
+               let plast = path.(Array.length path - 1) in
+               let guard = fst cells.(plast) in
+               let invariant =
+                 Poly.(
+                   Dynsys.Cast.poly_of_quadratic_form ~is_homogenous:false
+                     r.PQuadTemplates.certificates.(i)
+                   - const r.PQuadTemplates.a)
+               in
+               (guard, [ [ invariant ] ]))
+             r.PQuadTemplates.paths)
+      in
+      { status; postfixpoint }
+
+
   (* Polynomial systems *)
    module PropSOSTemplates = PropSOSTemplates.Make(Dynsys)
    module Liouville = Liouville.Make(Dynsys)

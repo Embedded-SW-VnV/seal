@@ -121,6 +121,50 @@ let run_prop_sos_examples () =
     Prop_sos_examples.perin;
   Format.printf "@]@."
 
+(* piecewise_lin works directly on lin_t (no poly_t cast needed) but
+   requires di=0 (see PiecewiseQuadraticTemplates's scope note) and affine
+   guards, which only MignoneInvariance1 among lin_t examples satisfies
+   (Example1Pierre has di=1, and every Linear_examples system has an
+   input too). *)
+let run_piecewise_lin () =
+  Format.printf "@[<v>== k-inductive piecewise-quadratic invariant (piecewise_lin) ==@ ";
+  let pp_guard fmt (g : Sys.quad_guard_t) = Format.fprintf fmt "%d guard rows" (List.length g) in
+  List.iter
+    (fun k ->
+      Format.printf "* MignoneInvariance1, k=%d@ " k;
+      (* k=2 is known to sometimes come back Unknown here: csdp's
+         Cholesky factorization can fail right at the tail of convergence
+         on the larger (more paths, more multiplier variables) k=2
+         problem -- confirmed by hand primal/dual objectives were both
+         already ~2.914 (essentially converged) when it happened, so this
+         is the same class of solver-capacity limit seen with
+         PropSOSTemplates.template, not a logic bug. k=1 (one path per
+         cell, the same granularity as round/shape/affine) is reliable. *)
+      match Ana.piecewise_lin k Piecewise_linear_examples.mignone_invariance_1 with
+      | result -> Format.printf "%a@ " (Ana.pp_guarded_result pp_guard) result
+      | exception e -> Format.printf "ERROR: %s@ " (Printexc.to_string e))
+    [ 1; 2 ];
+  (* The paper's own "running example" (see the module comment on
+     Piecewise_linear_examples.running_example): a larger, less
+     well-scaled problem (4 guard rows per mode instead of 2, offsets up
+     to 10, domain up to 9) than MignoneInvariance1. Known limitation,
+     left as-is for now rather than chased further: even k=1 comes back
+     Unknown here -- verbose csdp output showed pobj/dobj both ~3050
+     after 80 iterations (clearly converging) when "Factorization of the
+     system matrix failed" hit, the same class of near-boundary
+     solver-capacity issue seen elsewhere, just worse on this bigger
+     problem. Reproducing the paper's own k=4/314-paths/beta~1574 result
+     isn't reachable with the current csdp-based, non-bisected solve.
+     Kept here so the gap stays visible rather than silently unexercised. *)
+  Format.printf "* RunningExample (paper's example, df=3 di=0 via frozen u), k=1@ ";
+  (match
+     Ana.piecewise_lin ~offsets:Piecewise_linear_examples.running_example_offsets 1
+       Piecewise_linear_examples.running_example
+   with
+  | result -> Format.printf "%a@ " (Ana.pp_guarded_result pp_guard) result
+  | exception e -> Format.printf "ERROR: %s@ " (Printexc.to_string e));
+  Format.printf "@]@."
+
 (* Every poly_t example, whether authored directly as one (Polynomial_examples,
    including its nonlinear/genuinely-polynomial systems) or cast down from a
    lin_t via Sys.linear_to_poly (Linear_examples: single-mode; Piecewise_linear_examples:
@@ -173,5 +217,6 @@ let () =
   print_linear_examples ();
   print_piecewise_examples ();
   run_quadratic_templates ();
+  run_piecewise_lin ();
   run_prop_sos_examples ();
   run_reachability_and_bounds ()

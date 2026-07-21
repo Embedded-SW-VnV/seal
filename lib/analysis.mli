@@ -36,12 +36,25 @@ module type S = sig
       the system has no input). *)
   val affine: Dynsys.lin_t -> analysis_result_t
     
-  (* (\* Piecewise linear systems *\) *)
-    
-  (* val piecewise_lin: *)
-  (*   int -> (\* k rank for the k-long paths computation *\) *)
-  (*   Dynsys.lin_t -> *)
-  (*   Dynsys.quad_guard_t guarded_analysis_result_t *)
+  (* Piecewise linear systems *)
+
+  (** k-inductive piecewise-quadratic invariant: one quadratic certificate
+      per path of up to k cell indices (the certificate can depend on the
+      last k modes visited, not just the current one), bounded, decreasing
+      along every feasible transition (sliding the k-window), and dominated
+      by the init region for length-1 paths. Guards must be affine
+      (quad_guard_t built from affine half-spaces, as
+      Piecewise_linear_examples.affine_guard does) and di must be 0 (the
+      source algorithm has no input/disturbance concept). Reports one
+      postfixpoint entry per path: (last cell's guard, the path's
+      invariant). *)
+  val piecewise_lin:
+    ?offsets:Dynsys.coeff array array -> (* per-cell affine update offset b_i,
+      default all-zero: Dynsys.lin_t itself can't represent a nonzero one *)
+    ?solver:Osdp.Sdp.solver -> (* default: osdp's own default solver *)
+    int -> (* k: rank for the k-long paths computation *)
+    Dynsys.lin_t ->
+    Dynsys.quad_guard_t guarded_analysis_result_t
 
   (* Polynomial systems *)
       
