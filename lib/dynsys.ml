@@ -122,7 +122,7 @@ struct
 
   let linear_to_poly (sys: lin_t) = 
     let map = List.fold_right (fun (gl, matA) res ->
-      let gl' = List.fold_right (fun g gl_res -> (Cast.poly_of_quadratic_form (g:Mat.t))::gl_res) gl [] in
+      let gl' = List.fold_right (fun g gl_res -> (Cast.poly_of_quadratic_form ~is_homogenous:false (g:Mat.t))::gl_res) gl [] in
       let up = Cast.linear_map_of_matrix matA in
       (gl', up)::res
     ) sys.map [] in
