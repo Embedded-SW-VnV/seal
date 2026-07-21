@@ -1,335 +1,221 @@
+(* Property-directed polynomial template synthesis via SOS.
 
-(* 
+   Ported from
+   /Users/ploc/Repositories/git/papers/2016-progcertos/script/templatedesignprop.m
+   (function templatedesignout, objL1norm=0 path, the only one exercised by
+   the paper's example scripts), generalized from Matlab's fixed two-branch
+   if/else to Dynsys.poly_t's N-way piecewise map, and from a single global
+   guard per branch to a conjunction (as Dynsys.poly_guard_t already is),
+   plus universal quantification over a bounded input (Dynsys.di/input),
+   which Matlab's script has no equivalent for.
 
-- Measures based reachability
-- Property driven reach set
- *)
+   Given a property kappa(x) and a target degree, searches for a polynomial
+   template P and a scalar alpha such that:
+   - P(x) >= kappa(x) everywhere (P dominates the property to prove);
+   - P is inductive along every mode of the system (doesn't increase
+     stepping through any guarded update), optionally strengthened by a
+     domain_restriction assumption (matches the paper's gT: a known
+     invariant that doesn't itself need to be (re)proved here);
+   - P(x) <= alpha on the init region (matches the paper's gC).
+   so alpha is a proven bound on kappa(x) over all states reachable from
+   the init region, and {x : P(x) - alpha <= 0} is an inductive invariant
+   witnessing it. *)
 
-    
-module Make (Dynsys: Dynsys.S) = 
-  struct
-    module Sos = Osdp.Sos.Make(Dynsys.Poly)
-    include Utils_poly.Make(Sos)
-   
-type params = {
-  alpha: float; 
-  padding: float; 
-  deg: int;
-  solver: Osdp.Sdp.solver;
-  hypercube_mode: bool;
-}
+module Make (Dynsys: Dynsys.S) =
+struct
+  module Poly = Dynsys.Poly
+  module Sos = Osdp.Sos.Make (Dynsys.Poly)
 
-type result = {
-    v: Sos.Poly.t;
-    w: Sos.Poly.t;
-    (* plot_file: string; *)
-    (* perr: float; *)
-    (* r_list: float list; *)
-    ret: Osdp.SdpRet.t;   
-}
+  (* Round a nonnegative degree up to the nearest even number, matching
+     Matlab's 2*ceil(d/2): the degree of an SOS polynomial is always even. *)
+  let ceil2 d = 2 * ((d + 1) / 2)
 
-(* Main options *)
-let purefeas = false (* do not optimize for volume, just check purefeas *)
-let min_volume_on_v = false (* activate the SOS cons vol v > 1 *)
-let sos_verbose = 0
-let sdp_verbose = 0
-let null_on_fixpoint = false (* if true, then the inductiveness prop is enforced
-				over v' = ||x -f(x)||_2^2 v *)
-let debug = true
-            
-  
-(* Default values *)   
-let default_params =
-{ 
-  alpha =  2.; 
-  padding = 0.;
-  deg = 2;
-  solver = Osdp.Sdp.Mosek;
-  hypercube_mode = false;
-}
+  (* Degree to give a fresh SOS multiplier so that [multiplier * constraint]
+     can reach [target_deg] (Matlab's 2*k0-dj / 2*ceil(degTP/2)-2*ceil(deg r/2)
+     pattern). Clamped to 0 (constant multiplier) if the constraint is
+     already at or above the target degree. *)
+  let multiplier_deg target_deg constraint_deg =
+    max 0 (ceil2 target_deg - ceil2 constraint_deg)
 
-
-let cst_liouville = 1.
-
-let xi idx =
-  Sos.Const (Sos.Poly.of_list ([Osdp.Monomial.var idx, C.one]))   
-
-
-(* Returns the semi albegraic definition of the compact set considered and the
-   volume function per monomial *)
-let compact_definition p sv =
-  let dim = Array.length sv in
-  let volume moments elems =
+  (* P(T(x)): substitutes each of P's df variables by the corresponding
+     component of T (a concrete polynomial update), expanding monomial by
+     monomial rather than using Sos.Compose. This mirrors the paper's own
+     manual "PT" construction (templatedesignout.m loops over P's monomial
+     basis and multiplies each coefficient by the corresponding power of T)
+     -- and sidesteps a real osdp limitation: [Sos.solve] can raise
+     [Not_found] internally (in PreSdp's sparse conversion) when a
+     [Compose]-containing constraint is solved alongside a [Minimize]
+     objective on a variable that doesn't itself appear inside that
+     [Compose] (confirmed with a minimal repro against osdp directly; not
+     specific to this system). *)
+  let substitute df (p_expr : Sos.polynomial_expr) (update : Poly.t array) =
+    (* Note: avoids Sos's local-open operators here since its [(!)] means
+       "const from coeff", clashing with plain ref dereference. *)
     List.fold_left
-      (fun accu (m, w_c) ->  
-	let coeff = C.of_float (moments m dim) in
-	let coeff = Sos.Mult_scalar (coeff, Sos.( !(C.one) )) in 
-	Sos.( accu + coeff * w_c )
-      ) 
-      zero
-      elems
-  in
-  
-  if p.hypercube_mode then
-    let g1_l = hypercube sv in
-    let _X_relax name target_deg =
-      let vl, e, _ =
-	List.fold_left (fun (multipliers_l, expr, idx) v_cons -> 
-	let sos_multiplier = Sos.make ~n:dim ~d:(target_deg-2) name in
-	let sos_expr = Sos.( sos_multiplier * v_cons ) in
-	sos_multiplier::multipliers_l, Sos.( expr + sos_expr ), idx+1
-      ) ([], Sos.( !C.zero ), 1) g1_l 
-      in
-      vl, e
+      (fun acc (m, coeff) ->
+        let degs = Array.make df 0 in
+        List.iteri (fun i d -> if i < df then degs.(i) <- d) (Osdp.Monomial.to_list m);
+        let term = ref coeff in
+        for k = 0 to df - 1 do
+          if degs.(k) > 0 then
+            term := Sos.mult !term (Sos.power (Sos.const update.(k)) degs.(k))
+        done;
+        Sos.add acc !term)
+      (Sos.const Poly.zero)
+      (Sos.to_list p_expr)
+
+  (* Bisection search for the minimal feasible alpha, replacing a single
+     [Sos.Minimize alpha] solve.
+
+     Why: minimizing alpha directly pushes the solver's interior-point
+     iteration right up against the true optimum -- exactly where the SOS
+     problem becomes numerically degenerate. In practice (confirmed by
+     hand against this same encoding) csdp's Cholesky factorization can
+     fail to converge there ("Factorization of the system matrix failed")
+     even though the problem is perfectly well-posed and solves cleanly
+     via [Purefeas] at concrete alpha values comfortably on either side of
+     that boundary. [alpha - P - sum s_j.g0_j >= 0] is monotonic in alpha
+     (increasing alpha only relaxes it), so the minimal feasible alpha can
+     be found by a standard galloping-then-bisection search over
+     [Purefeas] checks instead -- the same style of search already used
+     by [QuadraticTemplates.shape]/[affine] (see [TemplatesUtils.dicho]),
+     just without requiring an a priori bracket: it gallops outward from 0
+     (in whichever direction is needed) to find one, then bisects it down.
+     [bracket_steps]/[bisect_steps] mirror [TemplatesUtils]'s own
+     precision choices (12 / 15). *)
+  let bracket_steps = 12
+  let bisect_steps = 15
+
+  let search_alpha (feasible : Sos.Poly.Coeff.t -> Osdp.SdpRet.t * Sos.Poly.t option) =
+    let module C = Sos.Poly.Coeff in
+    let two = C.of_int 2 in
+    let rec grow delta n =
+      if n <= 0 then None
+      else
+        match feasible delta with
+        | ret, Some p -> Some (delta, ret, p)
+        | _, None -> grow (C.mult delta two) (n - 1)
     in
-    _X_relax, volume Moments.volume_hypercube
+    match
+      match feasible C.zero with
+      | ret, Some p -> Some (C.zero, ret, p)
+      | _, None -> grow C.one bracket_steps
+    with
+    | None -> Osdp.SdpRet.Unknown, None
+    | Some (hi0, ret0, p0) ->
+      (* Gallop downward from the known-feasible hi0 until infeasible,
+         tightening hi to the smallest feasible point found along the way. *)
+      let rec gallop_down delta lo hi ret p n =
+        if n <= 0 then lo, hi, ret, p
+        else
+          let cand = C.sub hi delta in
+          match feasible cand with
+          | ret', Some p' -> gallop_down (C.mult delta two) lo cand ret' p' (n - 1)
+          | _, None -> cand, hi, ret, p
+      in
+      let lo, hi, ret, p = gallop_down C.one hi0 hi0 ret0 p0 bracket_steps in
+      let rec bisect lo hi ret p n =
+        if n <= 0 then hi, ret, p
+        else
+          let mid = C.div (C.add lo hi) two in
+          match feasible mid with
+          | ret', Some p' -> bisect lo mid ret' p' (n - 1)
+          | _, None -> bisect mid hi ret p (n - 1)
+      in
+      let alpha, ret, p = bisect lo hi ret p bisect_steps in
+      ret, Some Poly.(p - const alpha)
 
-  else (* Ball mode *)
-    let g1 = centered_ball sv 1.0 in
-    let _X_relax name target_deg = 
-      let sos_multiplier = Sos.make ~n:dim ~d:(target_deg-2) name in
-      let sos_expr = Sos.( sos_multiplier * g1 ) in
-      [sos_multiplier], sos_expr
+  let template
+      ?(domain_restriction : Dynsys.basic_semialgebraic_t = [])
+      ?solver (* None: let osdp pick its own default (Sos.default.sdp.solver) *)
+      (kappa : Sos.polynomial_expr)
+      (sys : Dynsys.poly_t)
+      (deg : int) =
+    let df = sys.Dynsys.df in
+    let p_expr = Sos.make ~n:df ~d:deg "P" in
+    let zero = Sos.( !Sos.Poly.Coeff.zero ) in
+
+    (* Init (matches gC): alpha - P - sum_j s_j.g0_j must be SOS, each s_j SOS.
+       alpha itself is a concrete value plugged in by search_alpha, not a
+       free decision variable (see search_alpha above for why). *)
+    let init_multipliers, init_terms =
+      List.fold_left
+        (fun (mults, terms) g0_j ->
+          let d = multiplier_deg deg (Poly.degree g0_j) in
+          let s_j = Sos.make ~n:df ~d "sC" in
+          s_j :: mults, Sos.(terms + s_j * Const g0_j))
+        ([], zero) sys.Dynsys.init
     in
 
-    _X_relax, volume Moments.volume_ball
+    (* Per mode (guard_i, update_i): P - P(T_i) - sum Gamma_ij.guard_ij
+       - sum Q_ik.domain_k - sum H_ik.input_k must be SOS *)
+    let mode_multipliers, mode_constraints =
+      List.fold_left
+        (fun (mults, constraints) (guard_i, update_i) ->
+          let deg_t_i =
+            Array.fold_left (fun d u -> max d (Poly.degree u)) 0 update_i
+          in
+          let deg_tp_i = deg_t_i * deg in
+          let pt_i = substitute df p_expr update_i in
+          let mults, guard_terms =
+            List.fold_left
+              (fun (mults, terms) g ->
+                let d = multiplier_deg deg_tp_i (Poly.degree g) in
+                let gamma = Sos.make ~n:df ~d "Gamma" in
+                gamma :: mults, Sos.(terms + gamma * Const g))
+              (mults, zero) guard_i
+          in
+          let mults, domain_terms =
+            List.fold_left
+              (fun (mults, terms) d_k ->
+                let d = multiplier_deg deg_tp_i (Poly.degree d_k) in
+                let q = Sos.make ~n:df ~d "Q" in
+                q :: mults, Sos.(terms + q * Const d_k))
+              (mults, zero) domain_restriction
+          in
+          let mults, input_terms =
+            match sys.Dynsys.input with
+            | None -> mults, zero
+            | Some input_l ->
+              List.fold_left
+                (fun (mults, terms) h_k ->
+                  let d = multiplier_deg deg_tp_i (Poly.degree h_k) in
+                  let h = Sos.make ~n:df ~d "H" in
+                  h :: mults, Sos.(terms + h * Const h_k))
+                (mults, zero) input_l
+          in
+          let cons = Sos.(p_expr - pt_i - guard_terms - domain_terms - input_terms) in
+          mults, cons :: constraints)
+        ([], []) sys.Dynsys.map
+    in
 
-(** Liouville version: overapproximate reachable states *)
+    (* Property: P - kappa must be SOS, unconditioned (matches the paper:
+       sos(P - kappa) carries no multiplier). *)
+    let prop_constraint = Sos.(p_expr - kappa) in
 
-(* considering the function maps from X -> Y
-   and defined by a vector of function f_i: X -> R
-   where maps=(f_i)_n  and n = dim(Y)
+    let base_constraints =
+      mode_constraints @ [ prop_constraint ] @ init_multipliers @ mode_multipliers
+    in
+    let options = Sos.({ default with pad = 0.; scale = false }) in
 
-   We compute the image of the semialgebraic set setx by maps.
-
-   This computation is restricted to the ball of radius r_gX of X: setx cap ball_rgX
-   and the image restricted to the ball of radius r_gY
-*)
-let compute ?(params=default_params) (dynsys:Dynsys.poly_t) =
-  let r_g = match dynsys.Dynsys.r_g with
-    | Some x -> x         
-    | None -> assert false in (*TODO cannot applyt that method if not provided with a bound on states *)
-  let deg = params.deg in
-  let alpha_sos = Sos.(Const (Poly.mult_scalar (C.of_float params.alpha) Poly.one)) in
-  let cst_liouville_sos = Sos.(Const (Poly.mult_scalar (C.of_float cst_liouville) Poly.one)) in
-
-  (* Building sys vars: x0 to x_{df-1} *)
-  let sys_vars = Array.init dynsys.Dynsys.df (fun idx -> xi idx) 
-  in
-  (* Building input vars: x_df to x_{df+di-1} *)
-  let _ (*input_vars*) = Array.init dynsys.di (fun idx -> xi (dynsys.df + idx)) in
-  (* let all_vars = Array.append sys_vars input_vars in *)
-
-  (* Main compact
-     - either a ball: centered in 0, radius 1, on sys vars
-     - or an hypercube: [-1;1]^on sys vars *)
-  let _X_relax, volume_fun = compact_definition params sys_vars in
-  
-  (* Input ball: centered in 0, radius r_gi, on input vars *)
-  (* TODO *)
-  (*let gin = centered_ball input_vars dynsys.r_gi in *)
-
-  
-  (* Init vall: centered in init, radius r_g0, on sys_vars *)
-  let g0 = (* ball sys_vars (\* TODO remettre la contrainte dynsys.r_g0 *\) 0.25 *) dynsys.init in
-
-  (* Compute a shrinked version of map *)
-  let shrinked_map =
-    List.map (fun (gl, f) -> 
-        (* All occurences of sys_vars in guard are scaled by r_g. They are stored /shrinked/ *)
-        let unshrink_gl = List.map (fun g -> transform_poly(*_expr*) g r_g dynsys.df ) gl in
-        let shrink_f = List.map (fun f_i -> transform_poly f_i r_g (dynsys.df:int)) (Array.to_list f) in
-        unshrink_gl, shrink_f
-      ) dynsys.map
-  in
-
-  let pp_map fmt l =
-    let pp_switch fmt (polyexpr_l, poly_l) =
-      Format.fprintf fmt "%a -> [%a]"
-        (Format.pp_print_list ~pp_sep:(fun fmt () -> Format.fprintf fmt " and ") Sos.Poly.pp) polyexpr_l
-        (Format.pp_print_list ~pp_sep:(fun fmt () -> Format.fprintf fmt ";@ ") Sos.Poly.pp) poly_l
-      in
-    List.iter (pp_switch fmt) l
-  in
-  Format.eprintf "Orig     map: %a@." pp_map (List.map (fun (gl,up) -> gl, Array.to_list up) dynsys.map);
-  Format.eprintf "Shrinked map: %a@." pp_map shrinked_map;
-  
-  (* Declaring polynomial variables v and w over sys vars *)
-
-  let v = Sos.make ~n:dynsys.df ~d:deg "v" in
-  let v_elems = Sos.to_list v in
-  let w = Sos.make ~n:dynsys.df ~d:deg "w" in
-  let w_elems = Sos.to_list w in 
-
-  (* (\* Filtering out odd monomials from v and w *\) *)
-  (* let v, _ = filter_odd_polyvar v_elems in *)
-  (* let w, w_elems = filter_odd_polyvar w_elems in *)
-
-  (* Declaration of multipliers *)
-
-  (* Fold_right to preserve the order. N-th element corresponds to n-th piecewise def *)
-  let multipliers, xi_relax_l, input_relax_l =
-    List.fold_right (fun (gl,_) (multipliers, xi_relax_l, input_relax_l) ->
-      let q13, _X_relax_expr = _X_relax "q13" deg in
-      let q11l, xi_relax = 
-	List.fold_left (fun (q11l, accu) g -> 
-	  let q11 = Sos.make ~n:(dynsys.df+dynsys.di) ~d:(deg(* TODO -(degree g)*)) "q11" in
-	  q11l, Sos.( accu + q11 * Const g )
-	) ([], _X_relax_expr) gl 
-      in
-      let multipliers = q13@q11l@multipliers in
-      let xi_relax_l = xi_relax::xi_relax_l in
-      let multipliers, input_relax_l =
-        match dynsys.input with
-        | None -> multipliers, input_relax_l
-        | Some gin_l -> (* TODO: shall we declare fresh q12 and q13 for each element ? *)
-           List.fold_left (fun (multipliers, input_relax_l) gin ->
-               let q12 = Sos.make ~n:(dynsys.df+dynsys.di) ~d:(deg-2) "q12" in
-               let input_relax = Sos.( q12 * Const gin ) in
-               q12::multipliers, input_relax::input_relax_l
-             ) (multipliers, input_relax_l) gin_l
-      in
-      multipliers, xi_relax_l, input_relax_l
-    ) shrinked_map ([], [], []) 
-  in
-  
-  (**** Main constraints: 
-	alpha v o f - v >= 0 on X (piecewise definition (f_i, X_i))
-	v >= 0 on Init
-	w >= cst ° v on X
-	w >= 0 on X
-  ****)
-
-  let _Q1l = 
-    List.mapi (
-      fun idx (_ (*g*), f) ->
-	let v' = if null_on_fixpoint then 
-	    let x_minus_f_2 = 
-	      norm2_square 
-		(List.map2 
-		   (fun v f_i -> let f_i = Sos.Const f_i in try Sos.( v -f_i ) with _ -> assert false) 
-		   (Array.to_list sys_vars) f
-		) 
-	    in
-	    Sos.( x_minus_f_2 * v ) 
-	  else v 
-	in	
-	let vf = try Sos.(Compose (v', List.map (fun p -> Const p) f)) with _ -> assert false in
-	let xi_relax = List.nth xi_relax_l idx in
-	if dynsys.di > 0 then (* alpha vf >= v on (X cap X_i) x X_input *) 
-	  let input_relax = List.nth input_relax_l idx in
-	  Sos.( alpha_sos*vf -v' - xi_relax - input_relax )
-	else  (* alpha vf >= v on (X cap X_i) *) 
-	  Sos.( alpha_sos*vf -v' - xi_relax )
-    ) shrinked_map
-  in
-
-  (* v >= 0 on ball init *) 
-  let _, q21l, expr = List.fold_left (fun (cpt, q21l, accu) g0_i ->
-                 let q21_i = Sos.make ~n:dynsys.df ~d:(deg-2) ("q21_" ^ string_of_int cpt) in  
-                 cpt+1, q21_i::q21l, Sos.( accu + q21_i * Const g0_i )
-               ) (1, [], Sos.Const Sos.Poly.zero) g0 in
-  (* let q21 = Sos.make ~n:dynsys.df ~d:(deg-2) "q21" in  
-   * let _Q2= Sos.( v - q21* g0 ) in   *)
-   let _Q2= Sos.( v - expr ) in   
-
-  (* w >= cst + v on X *) 
-  let q31, _X_relax_expr_31 = _X_relax "q31" deg in
-  let _Q3= Sos.( w - cst_liouville_sos - v - _X_relax_expr_31 ) in 
-  
-  (* w >= 0 on X *) 
-  let q41, _X_relax_expr_41 = _X_relax "q41" deg in
-  let _Q4= Sos.( w - _X_relax_expr_41 ) in
-
-  (**** This part is optionnal and activate only with option min_volume *****)
-  let vol_v = volume_fun v_elems in
-  let _Q5= Sos.( vol_v - !C.one ) in        (* vol_X v  >= cst, here cst = 1 *) 
-  (**** This part is optionnal and activate only with option min_volume *****)
-
-  (* Building constraint list *)
-  let constraints = 
-    _Q1l @ [_Q2; _Q3; _Q4]                    (* main constraints *)
-    @ (if min_volume_on_v then [_Q5] else []) (* optional feature *)
-    @ (q21l@q31@q41@multipliers)            (* SOS multipliers *)
-  in
-
-  let goal = volume_fun w_elems in  
-
-  if debug then begin
-    let _ = Format.printf "Goal = %a@." Sos.pp goal in
-    let _ = List.iter (fun cons -> Format.printf "Cons: %a (deg=%i, nbvars=%i)@." 
-      Sos.pp cons
-      (Sos.degree cons)
-      (Sos.nb_vars cons)
-    ) constraints in
-    ()
-  end;
-
-  
-  let ret, (pobj, dobj), vars, _ = 
-    (* try *)
-      Sos.solve
-	~options:(Sos.({ default with  
-	  pad = params.padding; 
-	  scale = false; 
-	  verbose = sos_verbose; 
-	  sdp = { 
-	    default.sdp with Osdp.Sdp.verbose=sdp_verbose 
-	  }
-	}))
-	~solver:params.solver
-	(if purefeas then Sos.Purefeas else Sos.Minimize goal) 
-	(* Sos.Purefeas *)
-	constraints 
-    (* with _ -> assert false *)
-  in
-  
-  let () = Format.printf "ret = %a@." Osdp.SdpRet.pp ret in
-  let () = Format.printf "pobj, dobj = %g, %g@." pobj dobj in
-
-
-  (* w is replaced by w - cst to simplify the following use of it as a simple O-superlevel set *)
-  let w = Sos.( w - cst_liouville_sos ) in
-
-  try
-    (* Obtain the polynomial result. This may fail is a failure has occured *)
-    let v_val = Sos.value_poly v vars in
-    let w_val = Sos.value_poly w vars in
-    
-    if debug then begin
-      Format.printf "v=%a@." Sos.Poly.pp v_val;  
-      Format.printf "w=%a@." Sos.Poly.pp w_val;
-    end;
-    
-    (* Unscale v and w *)
-
-    let v_val = unshrink_poly v_val r_g dynsys.df in
-    let w_val = unshrink_poly w_val r_g dynsys.df in
-    
-    if debug then begin
-      Format.printf "v=%a@." Sos.Poly.pp v_val;  
-      Format.printf "w=%a@." Sos.Poly.pp w_val;
-    end;
-    
-    Some { (* perr = perr; 
-	      r_list = r_list;  *) 
-      v = v_val; 
-      w = w_val; 
-      (* TODO remettre plot_file = plot plot_dirname dynsys params v_val w_val;  *)
-      ret = ret; 
-    }; 
-  with Not_found -> (
-    Format.printf "SDP error.@.";
-    None
-  )
-
-
-
-
-    
-let template ?prop _ (*sys*) _ (*deg*) =
-  let _ = prop in (* juste pour utiliser prop *)
-    Osdp.SdpRet.Unknown
-    , None
+    (* Osdp.Sos.solve can itself raise Not_found for certain constraint
+       combinations, from a bug in its preSdp.ml constraint-elimination
+       preprocessing (a variable can get eliminated in terms of another,
+       already-eliminated variable that was never re-substituted into its
+       definition, so it's later missing from the solved result map;
+       fixed upstream in osdp, kept here as a defensive fallback in case
+       an older osdp is linked). Caught so it degrades to an infeasible
+       result for that particular alpha instead of crashing the caller. *)
+    let feasible alpha_val =
+      let init_constraint = Sos.(Const (Poly.const alpha_val) - p_expr - init_terms) in
+      match
+        Sos.solve ~options ?solver Sos.Purefeas (init_constraint :: base_constraints)
+      with
+      | exception Not_found -> Osdp.SdpRet.Unknown, None
+      | ret, _obj, vars, _witnesses ->
+        if Osdp.SdpRet.is_success ret then
+          (try ret, Some (Sos.value_poly p_expr vars) with Not_found -> ret, None)
+        else ret, None
+    in
+    search_alpha feasible
 end
-

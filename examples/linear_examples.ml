@@ -31,7 +31,9 @@ let single_mode a_rows b_rows : Sys.lin_t =
     (* placeholders: the source data did not specify init/input regions *)
     init = (Array.make df (c 0.), c 0.1);
     input = Some (Array.make di (c 0.), c 1.);
-    r_g = None;
+    (* placeholder domain-of-interest radius for Analysis.liouville_method
+       (unused by round/shape/affine, which only read [map]) *)
+    r_g = Some (c 2.);
   }
 
 let a_1 = [ [ ratio 15 10; ratio (-7) 10 ]; [ ratio 1 1; ratio 0 1 ] ]

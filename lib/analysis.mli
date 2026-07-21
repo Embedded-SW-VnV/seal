@@ -20,11 +20,21 @@ module type S = sig
   val pp_result: Format.formatter -> analysis_result_t -> unit
   val pp_guarded_result: (Format.formatter -> 'guard_t -> unit) -> Format.formatter -> 'guard_t guarded_analysis_result_t -> unit
 
-  (* (\* Linear systems analyses *\) *)
-    
-  (* val round: Dynsys.lin_t -> analysis_result_t *)
-  (* val shape: Dynsys.lin_t -> analysis_result_t *)
-  (* val affine: Dynsys.lin_t -> analysis_result_t *)
+  (* Linear systems analyses *)
+
+  (** Ellipsoid invariant x'Px <= 1 with P - A'PA >= eps.eye, ignoring any
+      input/disturbance (B is dropped even if present). *)
+  val round: Dynsys.lin_t -> analysis_result_t
+
+  (** Ellipsoid invariant x'Px <= 1, minimal contraction rate lambda such
+      that A'PA <= lambda.P, ignoring any input/disturbance (B is dropped
+      even if present). *)
+  val shape: Dynsys.lin_t -> analysis_result_t
+
+  (** Like [shape], but for x' = Ax + Bu systems, accounts for a bounded
+      input u through the B part of the system (falls back to [shape] when
+      the system has no input). *)
+  val affine: Dynsys.lin_t -> analysis_result_t
     
   (* (\* Piecewise linear systems *\) *)
     
@@ -35,15 +45,22 @@ module type S = sig
 
   (* Polynomial systems *)
       
- val prop_driven_sos_lyap:
-    (Dynsys.poly_t -> Sos.polynomial_expr -> Dynsys.basic_semialgebraic_t) option
-    -> (* the property that drives the search for the template *)
+  (** Property-directed template synthesis: searches for a polynomial
+      template P and scalar alpha such that P >= kappa everywhere, P is
+      inductive along every mode (optionally assuming [domain_restriction]
+      holds throughout, in addition to the guards), and P <= alpha on the
+      init region -- so alpha bounds kappa over all reachable states. *)
+  val prop_driven_sos_lyap:
+    ?domain_restriction:Dynsys.basic_semialgebraic_t ->
+    ?solver:Osdp.Sdp.solver -> (* default: osdp's own default solver *)
+    Sos.polynomial_expr -> (* kappa: the property to prove, P(x) >= kappa(x) *)
     Dynsys.poly_t -> (* system analyzed *)
-    int -> (* targeted degree *)
+    int -> (* targeted degree of the template P *)
     analysis_result_t
 
 
   val liouville_method:
+    ?solver:Osdp.Sdp.solver -> (* default: osdp's own default solver *)
     Dynsys.poly_t ->
     int ->
     analysis_result_t

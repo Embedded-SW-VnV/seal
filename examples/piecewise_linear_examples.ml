@@ -71,7 +71,9 @@ let mignone_invariance_1 : Sys.lin_t =
     (* Matlab's I = [0,1] x [0,1]; approximated here by its inscribed ball *)
     init = (carr [| 0.5; 0.5 |], c 0.5);
     input = None;
-    r_g = None;
+    (* placeholder domain-of-interest radius for Analysis.liouville_method
+       (unused by round/shape/affine, which only read [map]) *)
+    r_g = Some (c 1.5);
   }
 
 (* Example1Pierre: single-mode, input-driven AR(2)-like law, with the input
@@ -87,7 +89,8 @@ let example1_pierre : Sys.lin_t =
     init = (carr [| 0.; 0. |], c 1e-8);
     (* u in [-1, 1] *)
     input = Some (carr [| 0. |], c 1.);
-    r_g = None;
+    (* matches Polynomial_examples.ex1 (Pierre1), the same underlying (A,B) *)
+    r_g = Some (c 30.);
   }
 
 let examples : (string * Sys.lin_t) list =

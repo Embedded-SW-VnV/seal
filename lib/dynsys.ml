@@ -49,8 +49,13 @@ sig
   val is_piecewise: ('a, 'b, 'c) t -> bool
   val is_linear: poly_t -> bool
 
-  (* (\* Only valid if sys is linear *\) *)
-  (* val poly_to_linear: poly_t -> lin_t *)
+  (** Only valid if [is_linear sys]; raises [Invalid_argument] otherwise.
+      Note: [init]/[input] cannot be generically recovered as a [ball_t]
+      from a [basic_semialgebraic_t] (not every semialgebraic set is a
+      ball), so they are set to a degenerate, zero-radius placeholder.
+      This is harmless for analyses that only look at [map] (e.g. the
+      quadratic templates in [QuadraticTemplates]). *)
+  val poly_to_linear: poly_t -> lin_t
 
   val linear_to_poly: lin_t -> poly_t
 
@@ -106,19 +111,21 @@ struct
     && Array.fold_left (fun ok u -> ok && Poly.degree u <= 1) true ua (* up to linear update *)
   ) sys.map 
 
-  (* let poly_to_linear sys = *)
-  (*   let map = *)
-  (*     List.fold_right (fun (gl, ua) res -> *)
-  (* 	let gl' = List.fold_right (fun g gl_res -> (quadratic_form_of_poly g)::gl_res) gl []  in *)
-  (* 	let u' = matrix_of_linear_map ua in *)
-  (* 	(gl', u')::res *)
-  (*     ) sys.map [] *)
-  (*   in *)
-  (*   { sys with  *)
-  (*     map = map; *)
-  (*     init = Utils.opt_map ball_to_semialg sys.init; *)
-  (*     input = Utils.opt_map ball_to_semialg sys.input; *)
-  (*   }  *)
+  let poly_to_linear (sys: poly_t) =
+    if not (is_linear sys) then
+      raise (Invalid_argument "poly_to_linear: system is not linear");
+    let map = List.fold_right (fun (gl, ua) res ->
+      let gl' = List.fold_right (fun g gl_res -> (Cast.quadratic_form_of_poly g)::gl_res) gl [] in
+      let u' = Cast.matrix_of_linear_map ua in
+      (gl', u')::res
+    ) sys.map [] in
+    let degenerate_ball n : ball_t = (Array.make n Coeff.zero, Coeff.zero) in
+    {
+      sys with
+      map = map;
+      init = degenerate_ball sys.df;
+      input = Utils.opt_map (fun _ -> degenerate_ball sys.di) sys.input;
+    }
 
   let linear_to_poly (sys: lin_t) = 
     let map = List.fold_right (fun (gl, matA) res ->

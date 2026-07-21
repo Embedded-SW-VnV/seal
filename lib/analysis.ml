@@ -1,74 +1,61 @@
 type status_t = Osdp.SdpRet.t
 
+(* Kept in sync with analysis.mli by hand: an .mli that spells out a
+   [module type S] requires the .ml to declare a matching one (module types
+   aren't inferred like values). A stale copy here previously caused
+   [round]/[shape]/[affine] to silently disappear from [Make]'s result even
+   after being implemented, because [Make] was sealed against this local,
+   outdated copy before the .mli's check ever ran. *)
 module type S = sig
   module Dynsys : Dynsys.S
   module Sos : Osdp.Sos.S
 
   type 'guard_t guarded_semialgebraic = 'guard_t * Dynsys.semialgebraic_t
-    
+
   type 'guard_t guarded_analysis_result_t = {
     status: status_t;
     postfixpoint: 'guard_t guarded_semialgebraic list
   }
-    
-  type analysis_result_t = unit guarded_analysis_result_t 
 
-  (** Printers *)
+  type analysis_result_t = unit guarded_analysis_result_t
+
   val pp_result: Format.formatter -> analysis_result_t -> unit
   val pp_guarded_result: (Format.formatter -> 'guard_t -> unit) -> Format.formatter -> 'guard_t guarded_analysis_result_t -> unit
-    
-  (** Template synthesis: postfixpoint computation *)
 
-  (* (\* Linear systems analyses *\) *)
-    
-  (* val round: Dynsys.lin_t -> analysis_result_t *)
-  (* val shape: Dynsys.lin_t -> analysis_result_t *)
-  (* val affine: Dynsys.lin_t -> analysis_result_t *)
-    
-  (* (\* Piecewise linear systems *\) *)
-    
-  (* val piecewise_lin: *)
-  (*   int -> (\* k rank for the k-long paths computation *\) *)
-  (*   Dynsys.lin_t -> *)
-  (*   Dynsys.quad_guard_t guarded_analysis_result_t *)
+  val round: Dynsys.lin_t -> analysis_result_t
+  val shape: Dynsys.lin_t -> analysis_result_t
+  val affine: Dynsys.lin_t -> analysis_result_t
 
-  (* Polynomial systems *)
-      
   val prop_driven_sos_lyap:
-    (Dynsys.poly_t -> Sos.polynomial_expr -> Dynsys.basic_semialgebraic_t) option
-    -> (* the property that drives the search for the template *)
-    Dynsys.poly_t -> (* system analyzed *)
-    int -> (* targeted degree *)
+    ?domain_restriction:Dynsys.basic_semialgebraic_t ->
+    ?solver:Osdp.Sdp.solver ->
+    Sos.polynomial_expr ->
+    Dynsys.poly_t ->
+    int ->
     analysis_result_t
 
   val liouville_method:
+    ?solver:Osdp.Sdp.solver ->
     Dynsys.poly_t ->
-    int -> (* targeted degree *)
+    int ->
     analysis_result_t
 
-  (** Narrowing with multiple templates *)
-
-  (* Narrowing through min-policy iterations *)
-  type quad_template_t = Dynsys.Mat.t 
+  type quad_template_t = Dynsys.Mat.t
   type poly_template_t = Dynsys.Poly.t
   type bound_t = Minf | Pinf | Fin of Dynsys.coeff
-      
+
   val narrow_linsys:
     Dynsys.lin_t ->
     (quad_template_t * bound_t) array ->
     (quad_template_t * bound_t) array
 
-  (* val narrow_piecewise_linsys: Dynsys.poly_t -> (poly_template_t *
-     bound_t) array -> (poly_template_t * bound_t) array *)
-      
-  val narrow_sys: 
+  val narrow_sys:
     Dynsys.poly_t ->
     (poly_template_t * bound_t) array ->
     (poly_template_t * bound_t) array
 end
 
-  
-module Make (Dynsys: Dynsys.S) : (S with module Dynsys = Dynsys) = struct
+module Make (Dynsys: Dynsys.S) = struct
     module Dynsys = Dynsys
     module Poly = Dynsys.Poly
     module Mat = Dynsys.Mat
@@ -113,49 +100,50 @@ module Make (Dynsys: Dynsys.S) : (S with module Dynsys = Dynsys) = struct
 	
     let pp_result fmt res = pp_guarded_result (fun _fmt _ -> ()) fmt res
 
-    (* (\* Linear systems analyses *\) *)
-    (* module QuadTemplates = QuadraticTemplates.Make(Dynsys) *)
-      
-  (*   let build_result conv (status, result_opt) = *)
-  (*     {  *)
-  (*       status = status; *)
-  (*       postfixpoint =  *)
-  (*         match result_opt with *)
-  (*         | None -> [] *)
-  (*         | Some (template, values) -> [((), [[conv template]])] *)
-  (*     } *)
+    (* Linear systems analyses *)
+    module QuadTemplates = QuadraticTemplates.Make(Dynsys)
 
-  (* let round sys = build_result Dynsys.poly_of_quadratic_form (QuadTemplates.round sys) *)
-  (* let shape sys = build_result Dynsys.poly_of_quadratic_form (QuadTemplates.shape sys) *)
-  (* let affine sys = build_result Dynsys.poly_of_quadratic_form (QuadTemplates.affine sys) *)
+    let build_result conv (status, result_opt) =
+      {
+        status = status;
+        postfixpoint =
+          match result_opt with
+          | None -> []
+          | Some (template, _values) -> [((), [[conv template]])]
+      }
+
+    let round sys = build_result Dynsys.Cast.poly_of_quadratic_form (QuadTemplates.round sys)
+    let shape sys = build_result Dynsys.Cast.poly_of_quadratic_form (QuadTemplates.shape sys)
+    let affine sys = build_result Dynsys.Cast.poly_of_quadratic_form (QuadTemplates.affine sys)
   
   (* (\* Piecewise linear systems *\) *)
   (* module PQuadTemplates = PiecewiseQuadraticTemplates.Make(Dynsys)     *)
   (* let piecewise_lin k linsys = PQuadTemplates.piecewise_lin k linsys  *)
     
   (* Polynomial systems *)
-   module PropSOSTemplates = PropSOSTemplates.Make(Dynsys) 
-      
-  let prop_driven_sos_lyap 
-      (prop:     (Dynsys.poly_t -> Sos.polynomial_expr -> Dynsys.basic_semialgebraic_t) option)
+   module PropSOSTemplates = PropSOSTemplates.Make(Dynsys)
+   module Liouville = Liouville.Make(Dynsys)
+
+  let prop_driven_sos_lyap
+      ?domain_restriction
+      ?solver
+      (kappa : Sos.polynomial_expr)
       (sys : Dynsys.poly_t)
-      (deg : int) : analysis_result_t = 
-    let status, result_opt = PropSOSTemplates.template ?prop  sys deg in
-    { 
+      (deg : int) : analysis_result_t =
+    let status, result_opt = PropSOSTemplates.template ?domain_restriction ?solver kappa sys deg in
+    {
       status = status;
-      postfixpoint = 
+      postfixpoint =
 	match result_opt with
 	  | None -> []
 	  | Some template -> [((), [[template]])]
       }
 
 
-  let liouville_method sys deg =
-    let _ = Liouville.template sys deg in
-    {
-      status = Osdp.SdpRet.Unknown;
-      postfixpoint = []
-    }
+  let liouville_method ?solver (sys : Dynsys.poly_t) (deg : int) : analysis_result_t =
+    match Liouville.compute ~params:{ Liouville.default_params with deg; solver } sys with
+    | Some r -> { status = r.Liouville.ret; postfixpoint = [((), [[r.Liouville.w]])] }
+    | None -> { status = Osdp.SdpRet.Unknown; postfixpoint = [] }
 
     
   (** Narrowing with multiple templates *)
