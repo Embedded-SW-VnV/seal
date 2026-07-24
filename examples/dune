@@ -1,3 +1,15 @@
+(library
+ (name examples_data)
+ (wrapped false)
+ (modules linear_examples piecewise_linear_examples polynomial_examples prop_sos_examples)
+ (libraries seal osdp))
+
 (executable
  (name run_examples)
- (libraries seal osdp))
+ (modules run_examples)
+ (libraries seal osdp examples_data))
+
+(executable
+ (name soundness_check_main)
+ (modules soundness_check_main)
+ (libraries seal osdp examples_data))
