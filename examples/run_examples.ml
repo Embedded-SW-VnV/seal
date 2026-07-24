@@ -104,20 +104,23 @@ let run_prop_sos_examples () =
   let cav10_deg = 4 and perin_deg = 2 in
   Format.printf "* cav10 (df=1 di=0), deg=%d@ " cav10_deg;
   run_and_print "kappa=x0 (expect alpha ~ 3)"
-    (fun sys -> Ana.prop_driven_sos_lyap Ana.Sos.(??0) sys cav10_deg)
+    (fun sys -> Ana.prop_driven_sos_lyap ~kappa:Ana.Sos.(??0) sys cav10_deg)
     Prop_sos_examples.cav10;
   run_and_print "kappa=-x0 (expect alpha ~ 0)"
-    (fun sys -> Ana.prop_driven_sos_lyap Ana.Sos.(~- ??0) sys cav10_deg)
+    (fun sys -> Ana.prop_driven_sos_lyap ~kappa:Ana.Sos.(~- ??0) sys cav10_deg)
+    Prop_sos_examples.cav10;
+  run_and_print "kappa=default (squared norm of the state)"
+    (fun sys -> Ana.prop_driven_sos_lyap sys cav10_deg)
     Prop_sos_examples.cav10;
   Format.printf "* perin (df=3 di=0), deg=%d@ " perin_deg;
   run_and_print "kappa=x2, no domain_restriction"
-    (fun sys -> Ana.prop_driven_sos_lyap Ana.Sos.(??2) sys perin_deg)
+    (fun sys -> Ana.prop_driven_sos_lyap ~kappa:Ana.Sos.(??2) sys perin_deg)
     Prop_sos_examples.perin;
   run_and_print "kappa=x2, domain_restriction=gT"
     (fun sys ->
       Ana.prop_driven_sos_lyap
         ~domain_restriction:Prop_sos_examples.perin_domain_restriction
-        Ana.Sos.(??2) sys perin_deg)
+        ~kappa:Ana.Sos.(??2) sys perin_deg)
     Prop_sos_examples.perin;
   Format.printf "@]@."
 
@@ -203,11 +206,13 @@ let run_reachability_and_bounds () =
       Format.printf "* %s (df=%d di=%d modes=%a)@ " name sys.df sys.di pp_mode_count sys.map;
       run_and_print "invariant (liouville)"
         (fun s -> Ana.liouville_method s reachability_deg) sys;
+      run_and_print "||x||^2 <= ? (kappa=default: squared norm of the state)"
+        (fun s -> Ana.prop_driven_sos_lyap s reachability_deg) sys;
       for i = 0 to sys.df - 1 do
         run_and_print (Printf.sprintf "x%d <= ? (kappa=x%d)" i i)
-          (fun s -> Ana.prop_driven_sos_lyap Ana.Sos.(?? i) s reachability_deg) sys;
+          (fun s -> Ana.prop_driven_sos_lyap ~kappa:Ana.Sos.(?? i) s reachability_deg) sys;
         run_and_print (Printf.sprintf "x%d >= ? (kappa=-x%d)" i i)
-          (fun s -> Ana.prop_driven_sos_lyap Ana.Sos.(~- (?? i)) s reachability_deg) sys
+          (fun s -> Ana.prop_driven_sos_lyap ~kappa:Ana.Sos.(~- (?? i)) s reachability_deg) sys
       done)
     reachability_examples;
   Format.printf "@]@."

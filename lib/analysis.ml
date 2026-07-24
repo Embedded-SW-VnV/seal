@@ -36,7 +36,7 @@ module type S = sig
   val prop_driven_sos_lyap:
     ?domain_restriction:Dynsys.basic_semialgebraic_t ->
     ?solver:Osdp.Sdp.solver ->
-    Sos.polynomial_expr ->
+    ?kappa:Sos.polynomial_expr ->
     Dynsys.poly_t ->
     int ->
     analysis_result_t
@@ -161,10 +161,10 @@ module Make (Dynsys: Dynsys.S) = struct
   let prop_driven_sos_lyap
       ?domain_restriction
       ?solver
-      (kappa : Sos.polynomial_expr)
+      ?kappa
       (sys : Dynsys.poly_t)
       (deg : int) : analysis_result_t =
-    let status, result_opt = PropSOSTemplates.template ?domain_restriction ?solver kappa sys deg in
+    let status, result_opt = PropSOSTemplates.template ?domain_restriction ?solver ?kappa sys deg in
     {
       status = status;
       postfixpoint =

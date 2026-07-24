@@ -62,11 +62,17 @@ module type S = sig
       template P and scalar alpha such that P >= kappa everywhere, P is
       inductive along every mode (optionally assuming [domain_restriction]
       holds throughout, in addition to the guards), and P <= alpha on the
-      init region -- so alpha bounds kappa over all reachable states. *)
+      init region -- so alpha bounds kappa over all reachable states.
+      [kappa] defaults to the squared norm of the state (sum x_i^2), so
+      alpha then bounds ||x||^2 over all reachable states in a single
+      solve -- and hence bounds every individual state variable
+      (|x_i| <= sqrt alpha), a cheap alternative to calling this once per
+      variable/direction with an explicit kappa = +/- x_i. *)
   val prop_driven_sos_lyap:
     ?domain_restriction:Dynsys.basic_semialgebraic_t ->
     ?solver:Osdp.Sdp.solver -> (* default: osdp's own default solver *)
-    Sos.polynomial_expr -> (* kappa: the property to prove, P(x) >= kappa(x) *)
+    ?kappa:Sos.polynomial_expr -> (* the property to prove, P(x) >= kappa(x);
+      defaults to the squared norm of the state *)
     Dynsys.poly_t -> (* system analyzed *)
     int -> (* targeted degree of the template P *)
     analysis_result_t

@@ -125,13 +125,27 @@ struct
       let alpha, ret, p = bisect lo hi ret p bisect_steps in
       ret, Some Poly.(p - const alpha)
 
+  (* Default property when none is supplied: the squared norm of the
+     state, sum_i x_i^2. Dominating it (P >= kappa) and bounding P by
+     alpha on init then gives ||x||^2 <= alpha over all reachable states,
+     i.e. a single ball bound from which every state variable is directly
+     bounded (|x_i| <= sqrt alpha) -- a cheap one-solve alternative to
+     calling this same method once per variable/direction with
+     kappa = +/- x_i. *)
+  let default_kappa df =
+    List.fold_left
+      (fun acc i -> Sos.(acc + ??i ** 2))
+      Sos.( !Sos.Poly.Coeff.zero )
+      (List.init df (fun i -> i))
+
   let template
       ?(domain_restriction : Dynsys.basic_semialgebraic_t = [])
       ?solver (* None: let osdp pick its own default (Sos.default.sdp.solver) *)
-      (kappa : Sos.polynomial_expr)
+      ?kappa (* None: default to [default_kappa] (squared norm of the state) *)
       (sys : Dynsys.poly_t)
       (deg : int) =
     let df = sys.Dynsys.df in
+    let kappa = match kappa with Some k -> k | None -> default_kappa df in
     let p_expr = Sos.make ~n:df ~d:deg "P" in
     let zero = Sos.( !Sos.Poly.Coeff.zero ) in
 
