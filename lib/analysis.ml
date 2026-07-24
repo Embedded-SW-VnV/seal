@@ -110,13 +110,19 @@ module Make (Dynsys: Dynsys.S) = struct
     (* Linear systems analyses *)
     module QuadTemplates = QuadraticTemplates.Make(Dynsys)
 
+    (* round/shape/affine actually prove [x'Px <= 1] (an ellipsoid, not a
+       homogeneous cone), so the "1" must be subtracted here to match the
+       [p(x) <= 0] convention used for every other analysis's postfixpoint
+       (see pp_basic_semialg) -- mirroring piecewise_lin's own [- const
+       alpha] just below. Without it, the returned invariant silently
+       claimed the far stronger (and generally false) [x'Px <= 0]. *)
     let build_result conv (status, result_opt) =
       {
         status = status;
         postfixpoint =
           match result_opt with
           | None -> []
-          | Some (template, _values) -> [((), [[conv template]])]
+          | Some (template, _values) -> [((), [[Poly.(conv template - const Dynsys.Coeff.one)]])]
       }
 
     let round sys = build_result Dynsys.Cast.poly_of_quadratic_form (QuadTemplates.round sys)
