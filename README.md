@@ -28,7 +28,18 @@ It provides:
 Seal uses [dune](https://dune.build) and depends on
 [`osdp`](https://cavale.enseeiht.fr/osdp/) and `num`.
 
+Seal currently needs `osdp` features not yet in a released version
+(the latest release on the official opam repository is 1.1.1). Until a
+new `osdp` release is published there, `seal.opam` pins `osdp` to the
+[`dev` branch](https://github.com/Embedded-SW-VnV/osdp/tree/dev) via
+`pin-depends`, so a plain `opam install .` from a clone of this repo
+resolves it automatically. **Seal is not yet published on the official
+opam repository** (packages there cannot use `pin-depends`), so
+`opam install seal` will not work until that `osdp` release lands.
+
 ```sh
+git clone https://github.com/Embedded-SW-VnV/seal.git
+cd seal
 opam install . --deps-only
 dune build
 dune runtest
