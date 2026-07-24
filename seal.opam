@@ -2,9 +2,17 @@ opam-version: "2.0"
 name: "seal"
 version: "0.2"
 synopsis: "Seal library - System Analysis Library"
+description: """
+Seal is a library for the analysis of dynamical systems (linear,
+piecewise-linear, polynomial) providing invariant synthesis based on
+sum-of-squares (SOS) programming and semidefinite programming solvers.
+"""
 maintainer: "pierre-loic.garoche@enac.fr"
 authors: "Pierre-Loic Garoche"
-license: "LGPL"
+license: "LGPL-3.0-or-later"
+homepage: "https://github.com/Embedded-SW-VnV/seal"
+bug-reports: "https://github.com/Embedded-SW-VnV/seal/issues"
+dev-repo: "git+https://github.com/Embedded-SW-VnV/seal.git"
 depends: [
   "dune" {>= "3.0"}
   "osdp"
