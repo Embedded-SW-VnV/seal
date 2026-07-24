@@ -25,21 +25,35 @@ struct
       
   let sampled_search init_tau init_res max_tau compute_tau has_improved =
     let tau_delta = Coeff.div (Coeff.sub max_tau init_tau) (Coeff.of_int nb_try) in
-    let rec aux tau res =
+    (* [best] tracks the best *affine-search* candidate found so far, kept
+       separate from [init_res] (typically shape's driftless-only result):
+       comparing via [has_improved] only ever makes sense between two
+       results produced by the same [compute_tau], since the value it reads
+       (e.g. quadraticTemplates.ml's lambda_id) can mean something entirely
+       different in [init_res] (there, it's whatever the caller stashed
+       under that slot for its own bookkeeping). Comparing against
+       [init_res] directly here previously made [has_improved] compare
+       incompatible quantities, silently discarding every genuine solution
+       found by [compute_tau] in favor of [init_res]. Falling back to
+       [init_res] only happens once, at the very end, and only if no tau in
+       the whole range yielded any feasible result at all. Also: a single
+       infeasible tau no longer aborts the whole search (every tau in
+       [init_tau, max_tau) is still tried). *)
+    let rec aux tau best =
       let tau' = Coeff.add tau tau_delta in
       if not(Coeff.lt tau max_tau) then
-	match res with Some res -> res  | None -> assert false (* we reached max_tau (=1) *)
+	match best with Some res -> res | None -> init_res
       else
 	let (_ (*tau_ret*), tau_res) as new_res = compute_tau tau in
-	match res, tau_res with
-	| None, None -> assert false
-	| Some res, None -> res (* current tau fails, we stop here. Should not happen. *) 
-	| None, Some _ -> aux tau' (Some new_res) 
+	match best, tau_res with
+	| None, None -> aux tau' None
+	| None, Some _ -> aux tau' (Some new_res)
+	| Some _, None -> aux tau' best
 	| Some (_, Some (_, old_values)), Some (_, tau_values) when has_improved tau_values old_values ->
 	   aux tau' (Some new_res)
-	| Some _, Some _ -> aux tau' res
+	| Some _, Some _ -> aux tau' best
     in
-    aux init_tau (Some init_res)
+    aux init_tau None
     
 end
   
