@@ -15,7 +15,61 @@
    rather than searching for a template dominating a given property), and
    this file may eventually be unified with the similar moments-based
    approach in saimcop/code/approx (which has no Liouville equation of its
-   own). *)
+   own).
+
+   KNOWN ISSUE (documented, not fixed): checked against this exact
+   encoding's own source paper (the "Image measure method" chapter,
+   Problem (eq:lpstrength): v = sigma_0 - sum sigma_j^0 r_j^in; w-1-v =
+   sigma_1 - sum sigma_j^1 r_j^X; alpha.v(f(x))-v = sigma_2 - sum sigma_j^2
+   r_j^X; w = sigma_3 - sum sigma_j^3 r_j^X; minimize the volume of w)
+   equation by equation, including the same r_j<=0 vs this codebase's
+   g_j>=0 sign flip already noted in PropSOSTemplates.ml -- [compute]'s
+   [_Q1l]/[_Q2]/[_Q3]/[_Q4] and its [volume_fun w_elems] minimization
+   objective are a faithful implementation of that problem. Yet
+   empirically (see examples/full_check_main.ml's sweep) the returned w
+   measurably violates w<=0 on Henrion1/Pierre1/Thao8.3, with violations
+   in the modest-but-nonzero 0.08-0.63 range (much smaller than
+   PropSOSTemplates.ml's blowups, plausibly because this method already
+   has a shrink/unshrink normalization the other one lacks -- see below --
+   but not eliminated by it).
+
+   One concrete inconsistency was found and tested: [g0] (the init region,
+   just below) is used as-is, unlike every other set here (guards, the
+   domain ball) which are explicitly rescaled to the same shrunk
+   y=x/r_g coordinate system that [v]/[w] and the whole SOS problem are
+   solved in via [transform_poly] (see [shrinked_map] just below and
+   [unshrink_poly] at the end of [compute]). For any system with r_g != 1
+   this means the "v>=0 on init" constraint is, as literally encoded, a
+   constraint on the WRONG scale (Thao8.3's init ball, r_g=3, ends up
+   asserted at its original radius/center directly against the shrunk y
+   coordinates instead of being scaled down by r_g first).
+
+   Tested the obvious fix (wrapping [g0] in the same [transform_poly g
+   r_g dynsys.df] as the guards get): it left Henrion1 unchanged (r_g=1,
+   so the transform is an identity there, as expected) and, more
+   tellingly, left Pierre1's low-degree violations completely unchanged
+   too (its actual worst violating point sits at ~(6e-7,-1e-6), deep
+   inside both the original and the correctly-shrunk init ball alike --
+   nowhere near the boundary that scaling would affect), while newly
+   breaking Pierre1's higher degrees (Unknown/no result where the
+   original code found a valid, passing certificate) and giving mixed
+   results on Thao8.3 (better at some degrees, worse at others) --
+   probably because correctly shrinking Pierre1's already-tiny init ball
+   (radius 1e-4, r_g=30) down further (to ~3e-6) makes that S-procedure
+   constraint itself nearly degenerate for CSDP. So this inconsistency is
+   real, but it isn't the (or at least isn't the whole) explanation for
+   the observed violations, and a narrow local fix trades one failure
+   mode for another instead of clearly improving things -- left as-is,
+   flagged here rather than patched in isolation.
+
+   The likely dominant cause is the same monomial-basis/solver-precision
+   conditioning problem diagnosed in detail in PropSOSTemplates.ml: even
+   with the domain X's own shrink/unshrink normalization already in place
+   here, a degree-10 polynomial's high-power terms still amplify whatever
+   residual CSDP's [PartialSuccess] solutions carry (nearly every failing
+   row here is [PartialSuccess], and even the two [Success] rows still
+   show small violations). Not fixed; reproduces the same still-unresolved
+   soundness investigation as PropSOSTemplates.ml. *)
 
 module Make (Dynsys: Dynsys.S) =
 struct

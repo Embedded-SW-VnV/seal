@@ -19,7 +19,56 @@
    - P(x) <= alpha on the init region (matches the paper's gC).
    so alpha is a proven bound on kappa(x) over all states reachable from
    the init region, and {x : P(x) - alpha <= 0} is an inductive invariant
-   witnessing it. *)
+   witnessing it.
+
+   KNOWN ISSUE (documented, not fixed): checked against this exact encoding's
+   own source paper (the "Polynomial invariants"/"Property-driven analysis"
+   chapter, Problem (polysynthesis)) equation by equation -- including the
+   sign flip needed since the paper's r_j<=0 guard/init convention is the
+   mirror image of this codebase's own g_j>=0 (see [template]'s use of
+   [sys.Dynsys.init]/guards below) -- the encoding here is a faithful,
+   correct implementation of that problem (the one simplification, using a
+   single shared [alpha] for both the init bound and the kappa-domination
+   slack rather than the paper's separate w, is an explicitly valid special
+   case per the paper's own Lemma, not a bug). Yet empirically (see
+   examples/full_check_main.ml's sweep), the returned P measurably violates
+   its own proven property on some examples (cav10, Cathala, Julia1,
+   Pierre1), with the violation growing -- sometimes to +inf -- as [deg]
+   increases, which is backwards from what a correct method should do.
+
+   Root cause, confirmed by direct experiment on cav10 (1-d, init spanning
+   [0,10]): the returned P(x) is correctly very negative through most of
+   its init region, then crosses from negative to positive right at/near
+   the init region's own far edge (x0 near 10) -- exactly where the
+   S-procedure's init multiplier vanishes (g0(10)=0, the ball's own
+   boundary), i.e. exactly where the "P(x)<=alpha" requirement has zero
+   multiplier slack to absorb any imprecision. This is a monomial-basis
+   conditioning problem, not a logic bug: a degree-8 template evaluated at
+   x0=10 has its x0^8 term amplify any residual coefficient error in the
+   SDP solution by a factor of 1e8, and CSDP's own [PartialSuccess] status
+   (present on nearly every failing row) is its own admission that the
+   returned coefficients aren't fully converged.
+
+   Ruled out experimentally:
+   - [pad] (tried 0, 0.5, 1, 2, 5 on Cathala/Julia1): violations stayed
+     equally catastrophic (1e195-1e235) at every value.
+   - Osdp.Sos's own [scale] option (a per-constraint equilibration,
+     default true, explicitly disabled below as [scale = false] with no
+     recorded reason): flipping it to [true] helped marginally at low
+     degree on cav10 but left degree 6/8/10 just as broken (deg=10 still
+     reached ~58000) -- it only rescales each constraint's overall norm by
+     a single scalar, it doesn't touch the underlying monomial basis, so it
+     can't fix a conditioning problem that's inherent to evaluating high
+     powers of x far from the origin.
+
+   The likely real fix is a genuine change of variables (rescale x to the
+   domain's own natural extent before building the SOS problem, unscale the
+   returned P after) -- exactly the pattern [Liouville.compute] already
+   uses (see its [transform_poly]/[unshrink_poly]/[r_g]), just not done
+   here. Not implemented: a real, nontrivial piece of work, scoped as its
+   own follow-up rather than patched in superficially. This reproduces (and
+   is likely the same root cause as) the original, still-unresolved
+   soundness investigation that motivated this whole test harness. *)
 
 module Make (Dynsys: Dynsys.S) =
 struct
