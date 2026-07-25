@@ -190,10 +190,19 @@ module Make (Dynsys: Dynsys.S) = struct
       }
 
 
+  (* Liouville.compute's own w satisfies [w >= 0] on reachable states (its
+     "raw" w, before the internal -1 shift, satisfies [w_raw >= 1] -- see
+     the note on [Liouville.compute]'s own doc comment): the OPPOSITE
+     convention from every other Analysis method here, which all report
+     "invariant holds where p <= 0" (see pp_basic_semialg). Negating it
+     here keeps that convention uniform across all six entry points,
+     instead of leaving liouville_method as a silent, easy-to-get-backwards
+     exception (confirmed: this file's own earlier doc comment, and this
+     module's first full_check_main.ml sweep, both got this backwards). *)
   let liouville_method ?solver ?pad (sys : Dynsys.poly_t) (deg : int) : analysis_result_t =
     let padding = match pad with None -> Liouville.default_params.Liouville.padding | Some p -> p in
     match Liouville.compute ~params:{ Liouville.default_params with deg; solver; padding } sys with
-    | Some r -> { status = r.Liouville.ret; postfixpoint = [((), [[r.Liouville.w]])] }
+    | Some r -> { status = r.Liouville.ret; postfixpoint = [((), [[Poly.(sub zero r.Liouville.w)]])] }
     | None -> { status = Osdp.SdpRet.Unknown; postfixpoint = [] }
 
     

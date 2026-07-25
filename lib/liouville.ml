@@ -3,8 +3,26 @@
    Given a piecewise-polynomial discrete dynamical system and a target
    degree, searches for two polynomials v and w such that v is inductive
    along every mode (alpha.v(f(x)) >= v(x) on the guarded region) and w
-   dominates v plus a constant on the domain, so that {x : w(x) <= 0}
-   over-approximates the states reachable from dynsys.init.
+   dominates v plus a constant on the domain.
+
+   SIGN CONVENTION (easy to get backwards, previously got backwards right
+   here -- see the "Image measure method" chapter this is ported from):
+   v is required >= 0 on init, hence (by the inductive step) on every
+   reachable state, and is otherwise free (can be arbitrarily negative
+   elsewhere on the domain). w is required >= 1 + v and >= 0 everywhere on
+   the domain; minimizing w's volume pushes it down towards its w>=0 floor
+   wherever v is very negative (the "don't care" part of the domain) while
+   forcing it to stay >= 1 wherever v >= 0 (the reachable part) -- 1 is
+   just a separation threshold, any positive constant would do. So
+   *reachable states satisfy w >= 1*, not w <= anything: the returned
+   [w] field (already shifted down by that same constant, see [compute]'s
+   own "w is replaced by w - cst" step) satisfies [w >= 0] on reachable
+   states. This is the OPPOSITE of the "invariant holds where p <= 0"
+   convention every other Analysis method uses (see
+   Analysis.pp_basic_semialg) -- Analysis.liouville_method negates it
+   before returning specifically to keep that convention uniform; callers
+   using [Liouville.compute] directly must remember [w]'s own sense is
+   inverted relative to that convention.
 
    Ported from
    /Users/ploc/Repositories/git/cavale/measuressos/code/ocaml/reachable_states.ml.
@@ -18,58 +36,36 @@
    own).
 
    KNOWN ISSUE (documented, not fixed): checked against this exact
-   encoding's own source paper (the "Image measure method" chapter,
-   Problem (eq:lpstrength): v = sigma_0 - sum sigma_j^0 r_j^in; w-1-v =
-   sigma_1 - sum sigma_j^1 r_j^X; alpha.v(f(x))-v = sigma_2 - sum sigma_j^2
-   r_j^X; w = sigma_3 - sum sigma_j^3 r_j^X; minimize the volume of w)
-   equation by equation, including the same r_j<=0 vs this codebase's
-   g_j>=0 sign flip already noted in PropSOSTemplates.ml -- [compute]'s
-   [_Q1l]/[_Q2]/[_Q3]/[_Q4] and its [volume_fun w_elems] minimization
-   objective are a faithful implementation of that problem. Yet
-   empirically (see examples/full_check_main.ml's sweep) the returned w
-   measurably violates w<=0 on Henrion1/Pierre1/Thao8.3, with violations
-   in the modest-but-nonzero 0.08-0.63 range (much smaller than
-   PropSOSTemplates.ml's blowups, plausibly because this method already
-   has a shrink/unshrink normalization the other one lacks -- see below --
-   but not eliminated by it).
+   encoding's own source paper (Problem (eq:lpstrength): v = sigma_0 - sum
+   sigma_j^0 r_j^in; w-1-v = sigma_1 - sum sigma_j^1 r_j^X; alpha.v(f(x))-v
+   = sigma_2 - sum sigma_j^2 r_j^X; w = sigma_3 - sum sigma_j^3 r_j^X;
+   minimize the volume of w) equation by equation, including the same
+   r_j<=0 vs this codebase's g_j>=0 sign flip already noted in
+   PropSOSTemplates.ml -- [compute]'s [_Q1l]/[_Q2]/[_Q3]/[_Q4] and its
+   [volume_fun w_elems] minimization objective are a faithful
+   implementation of that problem. Once checked with the CORRECT sign
+   above (w >= 0 on reachable states, not <= 0 -- an earlier version of
+   this comment, and examples/full_check_main.ml's first sweep, both had
+   this backwards), most of what looked like unsoundness on
+   Henrion1/Pierre1 disappears entirely: every previously-"failing" degree
+   now passes 100% of sampled points. Thao8.3 is the exception: violations
+   shrink drastically (from ~99% of sampled points down to ~1-2.5%) but
+   don't fully disappear, clustered right next to Thao8.3's own init
+   region (center (1, 2.5)) -- a smaller, more localized, and not yet
+   understood residual, still open.
 
-   One concrete inconsistency was found and tested: [g0] (the init region,
-   just below) is used as-is, unlike every other set here (guards, the
-   domain ball) which are explicitly rescaled to the same shrunk
-   y=x/r_g coordinate system that [v]/[w] and the whole SOS problem are
-   solved in via [transform_poly] (see [shrinked_map] just below and
-   [unshrink_poly] at the end of [compute]). For any system with r_g != 1
-   this means the "v>=0 on init" constraint is, as literally encoded, a
-   constraint on the WRONG scale (Thao8.3's init ball, r_g=3, ends up
-   asserted at its original radius/center directly against the shrunk y
-   coordinates instead of being scaled down by r_g first).
-
-   Tested the obvious fix (wrapping [g0] in the same [transform_poly g
-   r_g dynsys.df] as the guards get): it left Henrion1 unchanged (r_g=1,
-   so the transform is an identity there, as expected) and, more
-   tellingly, left Pierre1's low-degree violations completely unchanged
-   too (its actual worst violating point sits at ~(6e-7,-1e-6), deep
-   inside both the original and the correctly-shrunk init ball alike --
-   nowhere near the boundary that scaling would affect), while newly
-   breaking Pierre1's higher degrees (Unknown/no result where the
-   original code found a valid, passing certificate) and giving mixed
-   results on Thao8.3 (better at some degrees, worse at others) --
-   probably because correctly shrinking Pierre1's already-tiny init ball
-   (radius 1e-4, r_g=30) down further (to ~3e-6) makes that S-procedure
-   constraint itself nearly degenerate for CSDP. So this inconsistency is
-   real, but it isn't the (or at least isn't the whole) explanation for
-   the observed violations, and a narrow local fix trades one failure
-   mode for another instead of clearly improving things -- left as-is,
-   flagged here rather than patched in isolation.
-
-   The likely dominant cause is the same monomial-basis/solver-precision
-   conditioning problem diagnosed in detail in PropSOSTemplates.ml: even
-   with the domain X's own shrink/unshrink normalization already in place
-   here, a degree-10 polynomial's high-power terms still amplify whatever
-   residual CSDP's [PartialSuccess] solutions carry (nearly every failing
-   row here is [PartialSuccess], and even the two [Success] rows still
-   show small violations). Not fixed; reproduces the same still-unresolved
-   soundness investigation as PropSOSTemplates.ml. *)
+   Separately (and still real, independent of the sign fix above): [g0]
+   (the init region, just below) is used as-is, unlike every other set
+   here (guards, the domain ball) which are explicitly rescaled to the
+   same shrunk y=x/r_g coordinate system that [v]/[w] and the whole SOS
+   problem are solved in via [transform_poly]. Tested the obvious fix
+   (wrapping [g0] the same way): no effect on Henrion1 (r_g=1, identity
+   transform) or on Pierre1 (its violation sits deep inside the init ball,
+   nowhere near the boundary scaling would affect), and it broke Pierre1's
+   higher degrees (Unknown/no result where the unfixed code finds a valid
+   certificate) with mixed effect on Thao8.3. Not the explanation for the
+   residual Thao8.3 issue above; left undone, flagged here rather than
+   patched in isolation. *)
 
 module Make (Dynsys: Dynsys.S) =
 struct
