@@ -1,5 +1,5 @@
 .PHONY: build clean run-examples soundness-check \
-	full-check full-check-pad0 full-check-pad-default full-check-thorough
+	full-check full-check-pad0 full-check-pad-default full-check-thorough full-check-summary
 
 build:
 	dune build
@@ -45,7 +45,20 @@ full-check-pad0: build
 full-check-pad-default: build
 	dune exec examples/full_check_main.exe -- default full_check_pad_default.csv 15
 
-full-check: full-check-pad0 full-check-pad-default
+full-check: full-check-pad0 full-check-pad-default full-check-summary
+
+# Reads the two CSVs above (without re-running any solve) and prints a
+# categorized summary: overall PASS/FAIL/SKIPPED/N-A counts, then every
+# FAIL grouped by (example, method) and classified as UNSOUND (a
+# genuinely wrong invariant -- large or infinite violation somewhere in
+# the group) vs IMPRECISE (small, bounded violation everywhere in the
+# group -- likely a numerical/precision gap, not a logic error). See
+# examples/summarize_full_check.ml's own module doc for the classification
+# rule. Safe to re-run on its own any time after full-check-pad0/
+# full-check-pad-default have produced their CSVs, e.g. after re-reading
+# them by hand.
+full-check-summary: build
+	dune exec examples/summarize_full_check.exe -- full_check_pad0.csv full_check_pad_default.csv
 
 # Occasional, much slower run with no path-count cap: also exercises
 # piecewise_lin's k=4 on every example (including the paper's 314-path

@@ -18,3 +18,7 @@
  (name full_check_main)
  (modules full_check_main)
  (libraries seal osdp examples_data unix))
+
+(executable
+ (name summarize_full_check)
+ (modules summarize_full_check))
