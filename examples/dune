@@ -13,3 +13,8 @@
  (name soundness_check_main)
  (modules soundness_check_main)
  (libraries seal osdp examples_data))
+
+(executable
+ (name full_check_main)
+ (modules full_check_main)
+ (libraries seal osdp examples_data unix))

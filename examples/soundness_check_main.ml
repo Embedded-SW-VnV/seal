@@ -115,7 +115,7 @@ let print_round_shape_affine () =
       List.iter
         (fun (_, sa) -> pf "  %a@ " Check.pp_result (Check.check sa pts))
         r.postfixpoint)
-    [ ("round", Ana.round); ("shape", Ana.shape); ("affine", Ana.affine) ];
+    [ ("round", (fun sys -> Ana.round sys)); ("shape", (fun sys -> Ana.shape sys)); ("affine", (fun sys -> Ana.affine sys)) ];
   pf "@]@."
 
 module QuadTemplates = Seal.QuadraticTemplates.Make (Sys)

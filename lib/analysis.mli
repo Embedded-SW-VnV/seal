@@ -24,17 +24,19 @@ module type S = sig
 
   (** Ellipsoid invariant x'Px <= 1 with P - A'PA >= eps.eye, ignoring any
       input/disturbance (B is dropped even if present). *)
-  val round: Dynsys.lin_t -> analysis_result_t
+  val round: ?pad:float -> (* SDP padding factor, see Osdp.Lmi.options's
+      [pad] (default: 2.); [None] keeps Osdp.Lmi.default's own default *)
+    Dynsys.lin_t -> analysis_result_t
 
   (** Ellipsoid invariant x'Px <= 1, minimal contraction rate lambda such
       that A'PA <= lambda.P, ignoring any input/disturbance (B is dropped
       even if present). *)
-  val shape: Dynsys.lin_t -> analysis_result_t
+  val shape: ?pad:float -> Dynsys.lin_t -> analysis_result_t
 
   (** Like [shape], but for x' = Ax + Bu systems, accounts for a bounded
       input u through the B part of the system (falls back to [shape] when
       the system has no input). *)
-  val affine: Dynsys.lin_t -> analysis_result_t
+  val affine: ?pad:float -> Dynsys.lin_t -> analysis_result_t
     
   (* Piecewise linear systems *)
 
@@ -52,6 +54,7 @@ module type S = sig
     ?offsets:Dynsys.coeff array array -> (* per-cell affine update offset b_i,
       default all-zero: Dynsys.lin_t itself can't represent a nonzero one *)
     ?solver:Osdp.Sdp.solver -> (* default: osdp's own default solver *)
+    ?pad:float -> (* SDP padding factor (default: Osdp.Lmi.default's, 2.) *)
     int -> (* k: rank for the k-long paths computation *)
     Dynsys.lin_t ->
     Dynsys.quad_guard_t guarded_analysis_result_t
@@ -73,6 +76,8 @@ module type S = sig
     ?solver:Osdp.Sdp.solver -> (* default: osdp's own default solver *)
     ?kappa:Sos.polynomial_expr -> (* the property to prove, P(x) >= kappa(x);
       defaults to the squared norm of the state *)
+    ?pad:float -> (* SDP padding factor (default: 0., see
+      PropSOSTemplates.template's own default) *)
     Dynsys.poly_t -> (* system analyzed *)
     int -> (* targeted degree of the template P *)
     analysis_result_t
@@ -80,6 +85,8 @@ module type S = sig
 
   val liouville_method:
     ?solver:Osdp.Sdp.solver -> (* default: osdp's own default solver *)
+    ?pad:float -> (* SDP padding factor (default: Liouville.default_params's
+      own, 0.) *)
     Dynsys.poly_t ->
     int ->
     analysis_result_t

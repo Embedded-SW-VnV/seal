@@ -22,13 +22,14 @@ module type S = sig
   val pp_result: Format.formatter -> analysis_result_t -> unit
   val pp_guarded_result: (Format.formatter -> 'guard_t -> unit) -> Format.formatter -> 'guard_t guarded_analysis_result_t -> unit
 
-  val round: Dynsys.lin_t -> analysis_result_t
-  val shape: Dynsys.lin_t -> analysis_result_t
-  val affine: Dynsys.lin_t -> analysis_result_t
+  val round: ?pad:float -> Dynsys.lin_t -> analysis_result_t
+  val shape: ?pad:float -> Dynsys.lin_t -> analysis_result_t
+  val affine: ?pad:float -> Dynsys.lin_t -> analysis_result_t
 
   val piecewise_lin:
     ?offsets:Dynsys.coeff array array ->
     ?solver:Osdp.Sdp.solver ->
+    ?pad:float ->
     int ->
     Dynsys.lin_t ->
     Dynsys.quad_guard_t guarded_analysis_result_t
@@ -37,12 +38,14 @@ module type S = sig
     ?domain_restriction:Dynsys.basic_semialgebraic_t ->
     ?solver:Osdp.Sdp.solver ->
     ?kappa:Sos.polynomial_expr ->
+    ?pad:float ->
     Dynsys.poly_t ->
     int ->
     analysis_result_t
 
   val liouville_method:
     ?solver:Osdp.Sdp.solver ->
+    ?pad:float ->
     Dynsys.poly_t ->
     int ->
     analysis_result_t
@@ -125,9 +128,13 @@ module Make (Dynsys: Dynsys.S) = struct
           | Some (template, _values) -> [((), [[Poly.(conv template - const Dynsys.Coeff.one)]])]
       }
 
-    let round sys = build_result Dynsys.Cast.poly_of_quadratic_form (QuadTemplates.round sys)
-    let shape sys = build_result Dynsys.Cast.poly_of_quadratic_form (QuadTemplates.shape sys)
-    let affine sys = build_result Dynsys.Cast.poly_of_quadratic_form (QuadTemplates.affine sys)
+    let options_of_pad = function
+      | None -> QuadTemplates.Lmi.default
+      | Some pad -> QuadTemplates.Lmi.{ default with pad }
+
+    let round ?pad sys = build_result Dynsys.Cast.poly_of_quadratic_form (QuadTemplates.round ~options:(options_of_pad pad) sys)
+    let shape ?pad sys = build_result Dynsys.Cast.poly_of_quadratic_form (QuadTemplates.shape ~options:(options_of_pad pad) sys)
+    let affine ?pad sys = build_result Dynsys.Cast.poly_of_quadratic_form (QuadTemplates.affine ~options:(options_of_pad pad) sys)
   
   (* Piecewise linear systems *)
   module PQuadTemplates = PiecewiseQuadraticTemplates.Make(Dynsys)
@@ -135,9 +142,11 @@ module Make (Dynsys: Dynsys.S) = struct
   let piecewise_lin
       ?offsets
       ?solver
+      ?pad
       (k : int)
       (sys : Dynsys.lin_t) : Dynsys.quad_guard_t guarded_analysis_result_t =
-    let status, result_opt = PQuadTemplates.invariant ?offsets ?solver k sys in
+    let options = match pad with None -> None | Some pad -> Some PQuadTemplates.Lmi.{ default with pad } in
+    let status, result_opt = PQuadTemplates.invariant ?offsets ?options ?solver k sys in
     let cells = Array.of_list sys.Dynsys.map in
     match result_opt with
     | None -> { status; postfixpoint = [] }
@@ -168,9 +177,10 @@ module Make (Dynsys: Dynsys.S) = struct
       ?domain_restriction
       ?solver
       ?kappa
+      ?pad
       (sys : Dynsys.poly_t)
       (deg : int) : analysis_result_t =
-    let status, result_opt = PropSOSTemplates.template ?domain_restriction ?solver ?kappa sys deg in
+    let status, result_opt = PropSOSTemplates.template ?domain_restriction ?solver ?kappa ?pad sys deg in
     {
       status = status;
       postfixpoint =
@@ -180,8 +190,9 @@ module Make (Dynsys: Dynsys.S) = struct
       }
 
 
-  let liouville_method ?solver (sys : Dynsys.poly_t) (deg : int) : analysis_result_t =
-    match Liouville.compute ~params:{ Liouville.default_params with deg; solver } sys with
+  let liouville_method ?solver ?pad (sys : Dynsys.poly_t) (deg : int) : analysis_result_t =
+    let padding = match pad with None -> Liouville.default_params.Liouville.padding | Some p -> p in
+    match Liouville.compute ~params:{ Liouville.default_params with deg; solver; padding } sys with
     | Some r -> { status = r.Liouville.ret; postfixpoint = [((), [[r.Liouville.w]])] }
     | None -> { status = Osdp.SdpRet.Unknown; postfixpoint = [] }
 

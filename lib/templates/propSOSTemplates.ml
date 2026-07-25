@@ -142,6 +142,9 @@ struct
       ?(domain_restriction : Dynsys.basic_semialgebraic_t = [])
       ?solver (* None: let osdp pick its own default (Sos.default.sdp.solver) *)
       ?kappa (* None: default to [default_kappa] (squared norm of the state) *)
+      ?(pad = 0.) (* padding factor for the SDP solve (Sos.default.pad is 2.;
+        0. here by default, kept for backward compatibility -- see the note
+        on [options] below for why 0 was chosen originally *)
       (sys : Dynsys.poly_t)
       (deg : int) =
     let df = sys.Dynsys.df in
@@ -210,7 +213,7 @@ struct
     let base_constraints =
       mode_constraints @ [ prop_constraint ] @ init_multipliers @ mode_multipliers
     in
-    let options = Sos.({ default with pad = 0.; scale = false }) in
+    let options = Sos.({ default with pad; scale = false }) in
 
     (* Osdp.Sos.solve can itself raise Not_found for certain constraint
        combinations, from a bug in its preSdp.ml constraint-elimination
