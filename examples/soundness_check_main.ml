@@ -9,6 +9,7 @@ module Sys = Seal.Dynsys.Float
 module Ana = Seal.Analysis.Make (Sys)
 module Sim = Seal.Simulate.Make (Sys)
 module Check = Seal.Soundness_check.Make (Sys)
+module PQuad = Seal.PiecewiseQuadraticTemplates.Make (Sys)
 
 let pf = Format.printf
 
@@ -322,6 +323,48 @@ let print_switched_input_check () =
    | status, None -> pf "* affine: no result (status=%a)@ " Osdp.SdpRet.pp status);
   pf "@]@."
 
+(* Direct diagnostic of PiecewiseQuadraticTemplates.invariant on the paper's
+   own "running example", bypassing Analysis.piecewise_lin's wrapper, with
+   solver verbosity cranked up to see the pobj/dobj convergence trace. The
+   paper reports alpha_opt=242.0155, beta_opt=2173.8501 for this system
+   (sum ~2415.87) using the base (non-k-inductive, i.e. k=1) method; the
+   existing run_examples.ml smoke test currently gets Unknown here. *)
+let print_running_example_debug () =
+  pf "@[<v>== DEBUG: PiecewiseQuadraticTemplates.invariant on running_example, k=1 ==@ ";
+  let quiet = PQuad.Lmi.default in
+  let try_fixed fixed_a fixed_b =
+    let status, res =
+      PQuad.invariant ~offsets:Piecewise_linear_examples.running_example_offsets ~options:quiet
+        ~fixed_a:(Sys.Coeff.of_float fixed_a) ~fixed_b:(Sys.Coeff.of_float fixed_b) 1
+        Piecewise_linear_examples.running_example
+    in
+    pf "  fixed alpha=%.6g beta=%.6g -> status=%a (%s)@ " fixed_a fixed_b Osdp.SdpRet.pp status
+      (if Osdp.SdpRet.is_success status then "FEASIBLE" else "infeasible/unknown")
+    ;
+    ignore res
+  in
+  pf "* feasibility probe at the paper's own claimed optimum (alpha=242.0155, beta=2173.8501):@ ";
+  try_fixed 242.0155 2173.8501;
+  pf "* bisecting along the segment from the paper's point (infeasible) to (250,2300) (feasible):@ ";
+  let paper_a, paper_b = (242.0155, 2173.8501) in
+  let feas_a, feas_b = (250., 2300.) in
+  List.iter
+    (fun t ->
+      let a = paper_a +. (t *. (feas_a -. paper_a)) and b = paper_b +. (t *. (feas_b -. paper_b)) in
+      try_fixed a b)
+    [ 0.1; 0.2; 0.3; 0.4; 0.5; 0.6; 0.7; 0.8; 0.9 ];
+  pf "* NEW auto-search (bisection-based, default when no fixed_a/fixed_b given):@ ";
+  (match
+     PQuad.invariant ~offsets:Piecewise_linear_examples.running_example_offsets ~options:quiet 1
+       Piecewise_linear_examples.running_example
+   with
+   | status, Some r ->
+     pf "status=%a alpha=%a beta=%a (sum=%a) (paper: alpha=242.0155 beta=2173.8501 sum=2415.87)@ "
+       Osdp.SdpRet.pp status Sys.Coeff.pp r.PQuad.a Sys.Coeff.pp r.PQuad.b Sys.Coeff.pp
+       Sys.Coeff.(add r.PQuad.a r.PQuad.b)
+   | status, None -> pf "status=%a (no result)@ " Osdp.SdpRet.pp status);
+  pf "@]@."
+
 let print_affine_hand_check () =
   pf "@[<v>== affine: minimal hand-check (one step from the origin) ==@ ";
   let lin = Sys.poly_to_linear ex1 in
@@ -403,7 +446,7 @@ let print_piecewise_lin () =
   List.iteri
     (fun idx (guard, sa) ->
       let conj =
-        List.map (fun m -> Sys.Cast.poly_of_quadratic_form ~is_homogenous:false m) guard
+        List.map (fun (m, _strictness) -> Sys.Cast.poly_of_quadratic_form ~is_homogenous:false m) guard
       in
       let domain = Check.within_conjunction conj in
       let in_region = List.filter domain pts in
@@ -421,7 +464,56 @@ let print_deg6_default_kappa_debug () =
   List.iter (fun (_, sa) -> pf "%a@ " Check.pp_result (Check.check sa pts)) r.postfixpoint;
   pf "@]@."
 
+(* Regression test for a real, previously-undetected bug: is_feasible used
+   to route Motzkin's transposition alternative through Osdp.Lmi's general
+   SDP solver, encoded entirely via paired equality constraints ([eq;
+   Minus eq], forcing exact zero slack) with no genuine SDP-matrix
+   structure anywhere -- a degenerate, zero-interior problem that CSDP's
+   interior-point method couldn't handle (it explicitly logged "This is a
+   pure dual feasibility problem" then "Declaring dual infeasibility" even
+   when a valid, hand-verified dual certificate demonstrably existed). All
+   three tests below used to report FEASIBLE regardless of the actual
+   math, including test2/test3 which are unambiguously, trivially
+   infeasible -- this predated the strict/weak generalization entirely
+   (the same paired-equality pattern was already used by the original
+   single-strict-row version). Fixed by LpFeasible, which checks the
+   primal system directly via a real LP solver (ocplib-simplex) instead of
+   routing an equality-heavy alternative through an SDP solver. Kept here
+   as a permanent regression test. *)
+let print_is_feasible_unit_tests () =
+  pf "@[<v>== is_feasible isolated unit tests ==@ ";
+  let c = Sys.Coeff.of_float in
+  (* trivially feasible: exists x, x >= 0 (e.g. x=0) *)
+  let r1 = PQuad.is_feasible [ [| c 1.; c 0. |] ] [ [| c 0.; c 1. |] ] 1 in
+  pf "test1 (exists x: x>=0) expect true, got %b@ " r1;
+  (* trivially infeasible: exists x, -1 >= 0 (never, doesn't depend on x) *)
+  let r2 = PQuad.is_feasible [ [| c 1.; c 0. |] ] [ [| c (-1.); c 0. |] ] 1 in
+  pf "test2 (exists x: -1>=0) expect false, got %b@ " r2;
+  (* trivially infeasible via strict: exists x, x>0 strict AND -x>=0 weak (x>0 and x<=0) *)
+  let r3 = PQuad.is_feasible [ [| c 1.; c 0. |]; [| c 0.; c 1. |] ] [ [| c 0.; c (-1.) |] ] 1 in
+  pf "test3 (exists x: x>0 and -x>=0) expect false, got %b@ " r3;
+  pf "@]@."
+
+(* Solver-free: just the switch-graph adjacency + path enumeration, not a
+   full invariant solve (which, at k=3/k=4, is now a genuinely large SDP
+   -- hundreds of path certificates -- since the switch graph is finally
+   sized correctly; that's a separate, expected performance question from
+   whether the graph itself is *correct*, which this checks cheaply). *)
+let print_path_counts_running_example () =
+  pf "@[<v>== path counts for running_example, k=1..4 (paper: 4,17,73,314) ==@ ";
+  List.iter
+    (fun k ->
+      let n =
+        PQuad.count_paths ~offsets:Piecewise_linear_examples.running_example_offsets k
+          Piecewise_linear_examples.running_example
+      in
+      pf "k=%d: %d paths@ " k n)
+    [ 1; 2; 3; 4 ];
+  pf "@]@."
+
 let () =
+  print_path_counts_running_example ();
+  print_is_feasible_unit_tests ();
   print_empirical_box ();
   print_round_shape_lyapunov_check ();
   print_switched_round_shape_check ();
@@ -430,5 +522,5 @@ let () =
   print_prop_driven ();
   print_liouville ();
   print_piecewise_lin ();
-  ignore print_quad_template_raw_check; ignore print_affine_hand_check;
-  ignore print_deg6_default_kappa_debug
+  ignore print_running_example_debug; ignore print_quad_template_raw_check;
+  ignore print_affine_hand_check; ignore print_deg6_default_kappa_debug
