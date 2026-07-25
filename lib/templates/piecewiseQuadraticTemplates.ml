@@ -90,7 +90,17 @@ module Make (Dynsys : Dynsys.S) = struct
     let two = Coeff.of_int 2 in
     Array.mapi (fun k c -> if k = 0 then c else Coeff.mult two c) qq.(0)
 
-  let guard_rows (g : Dynsys.quad_guard_t) : Coeff.t array list = List.map affine_row g
+  let guard_rows (g : Dynsys.quad_guard_t) : Coeff.t array list = List.map (fun (m, _) -> affine_row m) g
+
+  (* Split by strictness, for the Motzkin feasibility test (is_feasible
+     below) -- the S-procedure/quadratization construction later in this
+     file always uses the combined [guard_rows] instead, since strictness
+     doesn't matter there. *)
+  let strict_rows (g : Dynsys.quad_guard_t) : Coeff.t array list =
+    List.filter_map (function m, Dynsys.Strict -> Some (affine_row m) | _, Dynsys.Weak -> None) g
+
+  let weak_rows (g : Dynsys.quad_guard_t) : Coeff.t array list =
+    List.filter_map (function m, Dynsys.Weak -> Some (affine_row m) | _, Dynsys.Strict -> None) g
 
   (* the (d+1)x(d+1) homogenized update matrix F_i = [1 0; b A_i] (see
      Law.homogeneize: M=[1,zeros(1,d);vector matrix]). [b] defaults to the
@@ -122,28 +132,16 @@ module Make (Dynsys : Dynsys.S) = struct
 
   (* ---- Feasibility test (Guard.TestFeasible / MotzkinTest) ----------- *)
 
-  (* "exists (z,x), z > 0: weak_rows.(z,x) >= 0 elementwise" -- tested via
-     Motzkin's transposition alternative, specialized to our case of
-     exactly one strict row ([1,0,...,0], "z > 0"): infeasible iff "exists
-     q >= 0: [1,0,...,0] + weak_rows^T.q = 0" is feasible (the strict row's
-     dual weight is pinned to 1, matching Matlab's p >= 0, sum(p) = 1 when
-     p has a single entry). *)
-  let is_feasible (weak_rows : Coeff.t array list) (d : int) : bool =
-    let rows = Array.of_list weak_rows in
-    let m = Array.length rows in
-    let q = Array.init m (fun i -> snd (Lmi.var_var (Printf.sprintf "q%d" i) 1)) in
-    let row_sum k =
-      Array.to_list (Array.mapi (fun i qi -> Lmi.(rows.(i).(k) *. qi)) q)
-      |> List.fold_left Lmi.add (Lmi.zeros 1 1)
-    in
-    let eqs =
-      List.init (d + 1) (fun k ->
-          let base = if k = 0 then Coeff.one else Coeff.zero in
-          Lmi.(base *. eye 1 + row_sum k))
-    in
-    let lmis = List.concat_map (fun eq -> [ eq; Lmi.Minus eq ]) eqs @ Array.to_list q in
-    let ret, _, _ = Lmi.solve Lmi.Purefeas lmis in
-    not (Osdp.SdpRet.is_success ret)
+  (* "exists x: strict_rows.(1,x) > 0 elementwise AND weak_rows.(1,x) >=
+     0 elementwise" (rows include the homogeneous "z=1" positivity row,
+     see [with_positivity]/[positivity_row] below, but that's now just a
+     harmless always-true constant row from LpFeasible's point of view,
+     not load-bearing the way it was for the previous Motzkin-based
+     encoding -- see LpFeasible's own comment for why this checks the
+     primal system directly instead). *)
+  let is_feasible (strict : Coeff.t array list) (weak : Coeff.t array list) (d : int) : bool =
+    let to_q = List.map (Array.map Coeff.to_q) in
+    LpFeasible.is_feasible (to_q strict) (to_q weak) d
 
   (* the guard's own homogeneous "z=1" row, prefixed onto quadratization
      row-sets (harmless/sound to include as an extra S-procedure term
@@ -243,8 +241,160 @@ module Make (Dynsys : Dynsys.S) = struct
     b : Coeff.t;
   }
 
-  let invariant ?(nonhom = true) ?offsets ?options ?solver (k : int) (sys : Dynsys.lin_t) :
-      Osdp.SdpRet.t * result option =
+  (* Bisection-based search for a good (alpha,beta), replacing a single
+     direct [Minimize (a+b)] solve (see the note on [search_alpha_beta]'s
+     caller for why). [feasible_at a b] must be monotonic in each argument
+     separately (increasing either only relaxes the problem: alpha only
+     ever appears subtracted in the init/boundedness constraints, beta only
+     ever appears added in the boundedness constraint), which holds here
+     but isn't checked -- passing a non-monotonic [feasible_at] will just
+     make the search's result meaningless, not raise.
+
+     Both alpha and beta are treated as non-negative reals here (beta
+     genuinely must be, since it bounds a squared norm; alpha could in
+     principle be negative for some systems, a case this search doesn't
+     handle -- a known, narrow limitation). *)
+  let bracket_steps = 12
+  let bisect_steps = 15
+
+  (* Minimal v >= 0 with [feasible v], via galloping out to a feasible
+     upper bound then bisecting down -- same shape as
+     PropSOSTemplates.search_alpha's bracket/bisect, specialized to a
+     single non-negative parameter. [None] if not even a generously grown
+     seed is feasible. *)
+  let bisect_min (feasible : Coeff.t -> bool) (seed : Coeff.t) : Coeff.t option =
+    let two = Coeff.of_int 2 in
+    let seed = if Coeff.compare seed Coeff.zero <= 0 then Coeff.one else seed in
+    let rec grow v n = if feasible v then Some v else if n <= 0 then None else grow (Coeff.mult v two) (n - 1) in
+    match grow seed bracket_steps with
+    | None -> None
+    | Some hi0 ->
+      let rec gallop_down delta lo hi n =
+        if n <= 0 then (lo, hi)
+        else
+          let cand = Coeff.sub hi delta in
+          if Coeff.compare cand Coeff.zero > 0 && feasible cand then gallop_down (Coeff.mult delta two) lo cand (n - 1)
+          else (cand, hi)
+      in
+      let lo, hi = gallop_down Coeff.one hi0 hi0 bracket_steps in
+      let rec bisect lo hi n =
+        if n <= 0 then hi
+        else
+          let mid = Coeff.div (Coeff.add lo hi) two in
+          if feasible mid then bisect lo mid (n - 1) else bisect mid hi (n - 1)
+      in
+      Some (bisect lo hi bisect_steps)
+
+  (* alpha and beta interact (both appear in the boundedness constraint,
+     whose relevant corner term is exactly beta-alpha), so this isn't a
+     single monotonic parameter to bisect; instead, alternate bisecting
+     each one holding the other fixed (coordinate descent) for a handful
+     of rounds, after first finding ANY jointly-feasible seed point to
+     bisect from.
+
+     The seed search tries (alpha,beta) pairs, NOT alpha=beta=v for
+     growing v: that direction can never work here, since beta-alpha is
+     then identically 0 regardless of v's size (confirmed: this was the
+     search's very first, broken version). Instead grow alpha outward,
+     and for each candidate alpha do a full inner doubling search over
+     beta, so any needed ratio between them is eventually covered
+     regardless of the system's actual scale. *)
+  let search_rounds = 8
+
+  let search_alpha_beta (feasible_at : Coeff.t -> Coeff.t -> bool) : (Coeff.t * Coeff.t) option =
+    let two = Coeff.of_int 2 in
+    (* [seed_for outer inner] grows [outer]'s parameter, and for each
+       candidate value does a full inner doubling search over [inner]'s
+       parameter; [outer]/[inner] pick out which of alpha/beta plays which
+       role, so calling this both ways gives two seeds biased toward
+       opposite ends of the (alpha,beta) ratio spectrum -- important since
+       alternating descent below converges to whichever *local*
+       coordinatewise-minimal point is nearest its starting seed, not
+       necessarily the point minimizing alpha+beta overall (confirmed:
+       from a single seed it plateaus after ~3 rounds at a point looser
+       than the true optimum). *)
+    let seed_for feasible_at =
+      let rec try_inner outer inner ni =
+        if feasible_at outer inner then Some (outer, inner)
+        else if ni <= 0 then None
+        else try_inner outer (Coeff.mult inner two) (ni - 1)
+      in
+      let rec try_outer outer no =
+        match try_inner outer Coeff.one bracket_steps with
+        | Some oi -> Some oi
+        | None -> if no <= 0 then None else try_outer (Coeff.mult outer two) (no - 1)
+      in
+      try_outer Coeff.one bracket_steps
+    in
+    let alternate feasible_at a b n =
+      let rec go a b n =
+        if n <= 0 then (a, b)
+        else
+          let a' = match bisect_min (fun x -> feasible_at x b) a with Some x -> x | None -> a in
+          let b' = match bisect_min (fun x -> feasible_at a' x) b with Some x -> x | None -> b in
+          go a' b' (n - 1)
+      in
+      go a b n
+    in
+    let seed1 = seed_for feasible_at in
+    let seed2 = seed_for (fun b a -> feasible_at a b) in
+    (* seed2 grew what it thinks of as "alpha" first, but that's really
+       beta in [feasible_at]'s own argument order -- swap back. *)
+    let seed2 = match seed2 with Some (b, a) -> Some (a, b) | None -> None in
+    let candidates =
+      List.filter_map
+        (fun seed ->
+          match seed with
+          | None -> None
+          | Some (a, b) -> Some (alternate feasible_at a b search_rounds))
+        [ seed1; seed2 ]
+    in
+    match candidates with
+    | [] -> None
+    | best :: rest ->
+      Some
+        (List.fold_left
+           (fun (a, b) (a', b') -> if Coeff.gt (Coeff.add a b) (Coeff.add a' b') then (a', b') else (a, b))
+           best rest)
+
+  (* Cheap, solver-free count of how many paths of length <= k [invariant]
+     would need a certificate for -- just the switch-graph adjacency
+     (Motzkin/LP feasibility checks, not full SDP solves) plus path
+     enumeration. Useful to gauge problem size before committing to a
+     (possibly very expensive, since it's one certificate matrix, and
+     several nonneg-multiplier matrices, per path) full [invariant] solve:
+     path counts grow fast with k (e.g. 4, 17, 73, 314 for k=1..4 on the
+     paper's own running_example), and so does the resulting SDP. *)
+  let count_paths ?offsets (k : int) (sys : Dynsys.lin_t) : int =
+    let d = sys.Dynsys.df in
+    let cells = Array.of_list sys.Dynsys.map in
+    let nb_cells = Array.length cells in
+    let offsets =
+      match offsets with Some o -> o | None -> Array.make nb_cells (Array.make d Coeff.zero)
+    in
+    let cell_f i = homogenize_update d offsets.(i) (snd cells.(i)) in
+    let adjacent i j =
+      let fi = cell_f i in
+      let strict =
+        positivity_row d
+        :: (strict_rows (fst cells.(i)) @ List.map (row_through fi) (strict_rows (fst cells.(j))))
+      in
+      let weak = weak_rows (fst cells.(i)) @ List.map (row_through fi) (weak_rows (fst cells.(j))) in
+      is_feasible strict weak d
+    in
+    List.length (compute_paths adjacent nb_cells k)
+
+  (* [?fixed_a]/[?fixed_b] pin alpha/beta to concrete values (as two-sided
+     PSD equality constraints, same trick as [is_feasible]'s [eqs]) instead
+     of leaving them free under the [Minimize (a+b)] objective. A pure
+     feasibility check at a fixed target is far more numerically robust
+     than a joint minimization for diagnosing whether a given (alpha,beta)
+     is actually achievable, without waiting on a full interior-point
+     convergence that may hit solver capacity limits before reaching the
+     optimum (see propSOSTemplates.ml's search_alpha for the same
+     motivation elsewhere in this codebase). *)
+  let invariant ?(nonhom = true) ?offsets ?options ?solver ?fixed_a ?fixed_b (k : int)
+      (sys : Dynsys.lin_t) : Osdp.SdpRet.t * result option =
     if sys.Dynsys.di > 0 then
       invalid_arg
         "PiecewiseQuadraticTemplates.invariant: di > 0 is not supported (the source has no \
@@ -263,24 +413,37 @@ module Make (Dynsys : Dynsys.S) = struct
 
     (* Laws.switches: over-approximated feasible transitions i -> j, and
        the combined (guard_i /\ pre-image of guard_j under update_i) rows
-       used to quadratize that transition's guard. *)
+       used to quadratize that transition's guard (combined: strictness
+       doesn't matter for that quadratization, only for the feasibility
+       test below -- see the note on [guard_rows]/[strict_rows]). Strict
+       rows pulled back through the update stay strict (pre-imaging a
+       strict half-space under an affine map is still a strict
+       half-space). *)
     let switch_rows : Coeff.t array list option array array = Array.make_matrix nb_cells nb_cells None in
     for i = 0 to nb_cells - 1 do
       let fi = cell_f i in
       for j = 0 to nb_cells - 1 do
-        let pulled_back_guard_j = List.map (row_through fi) (cell_raw_rows j) in
-        let weak = cell_raw_rows i @ pulled_back_guard_j in
-        if is_feasible weak d then switch_rows.(i).(j) <- Some (with_positivity d weak)
+        let combined = cell_raw_rows i @ List.map (row_through fi) (cell_raw_rows j) in
+        let strict =
+          positivity_row d
+          :: (strict_rows (fst cells.(i)) @ List.map (row_through fi) (strict_rows (fst cells.(j))))
+        in
+        let weak = weak_rows (fst cells.(i)) @ List.map (row_through fi) (weak_rows (fst cells.(j))) in
+        if is_feasible strict weak d then switch_rows.(i).(j) <- Some (with_positivity d combined)
       done
     done;
     let adjacent i j = match switch_rows.(i).(j) with Some _ -> true | None -> false in
 
     (* isinit.m: which cells intersect the init region (via the bounding-box
-       gate, see the note above ball_quadratic_form/ball_bounding_box_rows) *)
+       gate, see the note above ball_quadratic_form/ball_bounding_box_rows;
+       the bounding box itself is always weak, being an axis-aligned
+       over-approximation of a closed ball). *)
     let init_ball_q = ball_quadratic_form sys.Dynsys.init in
     let cell_meets_init =
       Array.init nb_cells (fun i ->
-          is_feasible (cell_raw_rows i @ ball_bounding_box_rows sys.Dynsys.init) d)
+          let strict = positivity_row d :: strict_rows (fst cells.(i)) in
+          let weak = weak_rows (fst cells.(i)) @ ball_bounding_box_rows sys.Dynsys.init in
+          is_feasible strict weak d)
     in
 
     let paths = Array.of_list (compute_paths adjacent nb_cells k) in
@@ -389,7 +552,57 @@ module Make (Dynsys : Dynsys.S) = struct
       done
     done;
 
-    let ret, _, values = Lmi.solve ?options ?solver (Lmi.Minimize Lmi.(a_expr + b_expr)) !lmis in
+    let base_lmis = !lmis in
+    let pin expr v acc =
+      let diff = Lmi.(expr - const (Mat.of_list_list [ [ v ] ])) in
+      diff :: Lmi.Minus diff :: acc
+    in
+    let lmis_at fixed_a fixed_b =
+      let acc = match fixed_a with None -> base_lmis | Some v -> pin a_expr v base_lmis in
+      match fixed_b with None -> acc | Some v -> pin b_expr v acc
+    in
+    let solve_at fixed_a fixed_b = Lmi.solve ?options ?solver (Lmi.Minimize Lmi.(a_expr + b_expr)) (lmis_at fixed_a fixed_b) in
+    let feasible_at a b = Osdp.SdpRet.is_success (let ret, _, _ = solve_at (Some a) (Some b) in ret) in
+
+    (* When the caller pins alpha and/or beta explicitly, solve once at
+       those values (the diagnostic/probing use case). Otherwise auto-search
+       for a good (alpha,beta) via alternating bisection (see
+       search_alpha_beta above the [nonneg_matrix] note -- actually defined
+       just below) before the final solve that extracts certificates: a
+       direct [Minimize (a+b)] can fail to converge well before reaching
+       the true optimum on larger examples (confirmed on the paper's own
+       running_example: CSDP's primal/dual objectives stalled around
+       ~3030-3060 and then failed outright, while pure feasibility checks
+       at fixed (alpha,beta) close to the paper's own reported optimum --
+       242.0155/2173.8501 -- succeed cleanly, meaning the true optimum was
+       being approached but never reached), the same class of numerical
+       fragility PropSOSTemplates.search_alpha works around elsewhere in
+       this codebase. *)
+    let final_a, final_b =
+      match fixed_a, fixed_b with
+      | Some a, Some b -> (Some a, Some b)
+      | _ -> (
+        match search_alpha_beta feasible_at with
+        | None -> (fixed_a, fixed_b)
+        | Some (a, b) ->
+          (* [a, b] sit right at the numerical feasibility boundary
+             bisection converged to, where CSDP's verdict isn't perfectly
+             reproducible (confirmed empirically: the exact same (a,b) pin
+             came back PartialSuccess in one process run and DualInfeasible
+             in another) -- re-solving exactly there for the final
+             certificate is unreliable, so back off with a small,
+             growing safety margin (still sound: larger alpha/beta only
+             relaxes the constraints) until a solve actually succeeds. *)
+          let rec with_margin pct =
+            if pct > 10 then (Some a, Some b) (* exact values, as a last resort *)
+            else
+              let factor = Coeff.of_float (1. +. (0.01 *. float_of_int pct)) in
+              let a' = Coeff.mult a factor and b' = Coeff.mult b factor in
+              if feasible_at a' b' then (Some a', Some b') else with_margin (pct + 1)
+          in
+          with_margin 1)
+    in
+    let ret, _, values = solve_at final_a final_b in
     if Osdp.SdpRet.is_success ret then
       try
         let certificates = Array.init nb_paths (fun i -> Lmi.value_mat (m_path i) values) in

@@ -2,6 +2,6 @@
 (library
  (name seal)
  (public_name seal)
- (libraries osdp num)
+ (libraries osdp num zarith ocplib-simplex)
  (wrapped true)
 )

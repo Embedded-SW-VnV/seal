@@ -34,13 +34,16 @@ let c = Sys.Coeff.of_float
 let carr = Array.map c
 let crows = List.map (List.map c)
 
-(* Encodes the half-space [a . x <= b] as p(x) = b - a.x, following the
-   [p(x) >= 0] convention used throughout for guards/init/input (see how
-   PropSOSTemplates.compute treats dynsys.init/guards as nonnegative
-   multipliers). As a quadratic form (1,x)^T Q (1,x): Q_00 = b,
-   Q_(0,i+1) = Q_(i+1,0) = -a_i / 2, everything else 0. Strict vs weak
-   inequalities are not distinguished (Seal's semialgebraic sets are closed). *)
-let affine_guard (a : Sys.coeff array) (b : Sys.coeff) : Mat.t =
+(* Encodes the half-space [a . x <= b] (or [a . x < b] when [~strict:true])
+   as p(x) = b - a.x, following the [p(x) >= 0]/[p(x) > 0] convention used
+   throughout for guards/init/input (see how PropSOSTemplates.compute
+   treats dynsys.init/guards as nonnegative multipliers). As a quadratic
+   form (1,x)^T Q (1,x): Q_00 = b, Q_(0,i+1) = Q_(i+1,0) = -a_i / 2,
+   everything else 0. Strict vs weak matters for cell-partition boundaries
+   (one side of a shared boundary must be strict so adjacent cells don't
+   overlap on it) and for PiecewiseQuadraticTemplates.is_feasible's Motzkin
+   test -- see Dynsys.strictness. *)
+let affine_guard ?(strict = false) (a : Sys.coeff array) (b : Sys.coeff) : Mat.t * Sys.strictness =
   let n = Array.length a in
   let q = Array.make_matrix (n + 1) (n + 1) Sys.Coeff.zero in
   q.(0).(0) <- b;
@@ -50,12 +53,15 @@ let affine_guard (a : Sys.coeff array) (b : Sys.coeff) : Mat.t =
       q.(0).(i + 1) <- v;
       q.(i + 1).(0) <- v)
     a;
-  Mat.of_array_array q
+  (Mat.of_array_array q, if strict then Sys.Strict else Sys.Weak)
 
 (* Mignone, invariance example 1: R^2 partitioned into its 4 quadrants, one
    linear law per quadrant (autonomous, no input). *)
 let mignone_invariance_1 : Sys.lin_t =
-  let g a b = affine_guard (carr a) (c b) in
+  (* Matlab's exampleMignoneinvariance1.m tags all four rows of every
+     quadrant strict (each cell is an open quadrant; the axes belong to
+     none of them). *)
+  let g a b = affine_guard ~strict:true (carr a) (c b) in
   let quadrant_i = [ g [| -1.; 0. |] 0.; g [| 0.; -1. |] 0. ] in
   let quadrant_iv = [ g [| -1.; 0. |] 0.; g [| 0.; 1. |] 0. ] in
   let quadrant_iii = [ g [| 1.; 0. |] 0.; g [| 0.; 1. |] 0. ] in
@@ -114,12 +120,19 @@ let example1_pierre : Sys.lin_t =
    drop the offset and analyze the wrong (through-the-origin) system. It's
    deliberately kept out of [examples] below for that reason. *)
 let running_example : Sys.lin_t =
-  let g a b = affine_guard (carr a) (c b) in
-  let u_bounds = [ g [| 0.; 0.; 1. |] 3.; g [| 0.; 0.; -1. |] 3. ] in
-  let guard1 = u_bounds @ [ g [| -9.; 7.; 6. |] 5.; g [| -4.; 8.; -8. |] 4. ] in
-  let guard2 = u_bounds @ [ g [| -9.; 7.; 6. |] 5.; g [| 4.; -8.; 8. |] (-4.) ] in
-  let guard3 = u_bounds @ [ g [| -4.; 8.; -8. |] 4.; g [| 9.; -7.; -6. |] (-5.) ] in
-  let guard4 = u_bounds @ [ g [| 9.; -7.; -6. |] (-5.); g [| 4.; -8.; 8. |] (-4.) ] in
+  (* Strict/weak tags below match runningexample.m's own Contrainte calls
+     exactly (verified against that source directly): the u-bounds are
+     always weak; the two auxiliary-hyperplane rows (AuxG1<=5, AuxG2<=4)
+     that partition the 4 cells are each strict on one side of their
+     shared boundary and weak on the other, so adjacent cells don't
+     overlap on it. *)
+  let gw a b = affine_guard (carr a) (c b) in
+  let gs a b = affine_guard ~strict:true (carr a) (c b) in
+  let u_bounds = [ gw [| 0.; 0.; 1. |] 3.; gw [| 0.; 0.; -1. |] 3. ] in
+  let guard1 = u_bounds @ [ gs [| -9.; 7.; 6. |] 5.; gs [| -4.; 8.; -8. |] 4. ] in
+  let guard2 = u_bounds @ [ gs [| -9.; 7.; 6. |] 5.; gw [| 4.; -8.; 8. |] (-4.) ] in
+  let guard3 = u_bounds @ [ gs [| -4.; 8.; -8. |] 4.; gw [| 9.; -7.; -6. |] (-5.) ] in
+  let guard4 = u_bounds @ [ gs [| 9.; -7.; -6. |] (-5.); gs [| 4.; -8.; 8. |] (-4.) ] in
   let a1 = Mat.of_list_list (crows [ [ 0.4217; 0.1077; 0.5661 ]; [ 0.1162; 0.2785; 0.2235 ]; [ 0.; 0.; 1. ] ]) in
   let a2 = Mat.of_list_list (crows [ [ 0.4763; 0.0145; 0.9033 ]; [ 0.1315; 0.3291; 0.1459 ]; [ 0.; 0.; 1. ] ]) in
   let a3 = Mat.of_list_list (crows [ [ 0.2618; 0.1177; 0.0868 ]; [ 0.4014; 0.4161; 0.6320 ]; [ 0.; 0.; 1. ] ]) in

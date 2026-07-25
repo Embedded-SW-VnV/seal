@@ -28,7 +28,16 @@ sig
 
   (* Guards *)
   type poly_guard_t = basic_semialgebraic_t
-  type quad_guard_t = Mat.t list
+  (* Strict rows (p(x) > 0) must be told apart from weak ones (p(x) >= 0):
+     this matters for testing whether a cell/switch is feasible at all
+     (Motzkin's transposition theorem treats them differently -- see
+     PiecewiseQuadraticTemplates.is_feasible), and for cells meant to
+     partition state space without overlapping on their shared boundary
+     (one side of the boundary strict, the other weak). It does NOT matter
+     for the S-procedure/quadratization used in the actual invariance LMIs
+     (both kinds get the same nonnegative-multiplier treatment there). *)
+  type strictness = Strict | Weak
+  type quad_guard_t = (Mat.t * strictness) list
     
   (* Updates *)
   type poly_update_t = Poly.t array (* array of size df *)
@@ -86,7 +95,8 @@ struct
     
   (* Guards *)
   type poly_guard_t = basic_semialgebraic_t (* Poly.t list *) (* conjunction of constraints *)
-  type quad_guard_t = Mat.t list
+  type strictness = Strict | Weak
+  type quad_guard_t = (Mat.t * strictness) list
     
   (* Updates *)
   type poly_update_t = Poly.t array (* array of size df *)
@@ -115,7 +125,10 @@ struct
     if not (is_linear sys) then
       raise (Invalid_argument "poly_to_linear: system is not linear");
     let map = List.fold_right (fun (gl, ua) res ->
-      let gl' = List.fold_right (fun g gl_res -> (Cast.quadratic_form_of_poly g)::gl_res) gl [] in
+      (* poly_guard_t (Poly.t list) has no strict/weak distinction of its
+         own, so there's nothing to preserve here: every row defaults to
+         Weak, matching this cast's prior (pre-strictness) behavior. *)
+      let gl' = List.fold_right (fun g gl_res -> (Cast.quadratic_form_of_poly g, Weak)::gl_res) gl [] in
       let u' = Cast.matrix_of_linear_map ua in
       (gl', u')::res
     ) sys.map [] in
@@ -129,7 +142,9 @@ struct
 
   let linear_to_poly (sys: lin_t) = 
     let map = List.fold_right (fun (gl, matA) res ->
-      let gl' = List.fold_right (fun g gl_res -> (Cast.poly_of_quadratic_form ~is_homogenous:false (g:Mat.t))::gl_res) gl [] in
+      (* poly_guard_t can't represent strictness, so it's dropped here
+         (the reverse direction of poly_to_linear's default-to-Weak). *)
+      let gl' = List.fold_right (fun (g, _s) gl_res -> (Cast.poly_of_quadratic_form ~is_homogenous:false (g:Mat.t))::gl_res) gl [] in
       let up = Cast.linear_map_of_matrix matA in
       (gl', up)::res
     ) sys.map [] in

@@ -17,6 +17,8 @@ depends: [
   "dune" {>= "3.0"}
   "osdp" {>= "1.1.2"}
   "num"
+  "zarith"
+  "ocplib-simplex"
 ]
 pin-depends: [
   [ "osdp.1.1.2-dev" "git+https://github.com/Embedded-SW-VnV/osdp.git#7ff6170770c7007e0a740a7fc8469a9dc5d4c97a" ]
