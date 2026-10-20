@@ -1,9 +1,18 @@
 # Seal
 
-**Work in progress.** Seal is under active development; interfaces,
-representations, and results may change without notice, and some templates
-are known to be incomplete or unreliable on larger problems (see the notes
-in `examples/run_examples.ml`).
+> **Work in progress — do not rely on its results.** Seal is under active
+> development: interfaces, representations and results may change without
+> notice. Some analyses are **known to return unsound invariants** in some
+> cases: `prop_driven_sos_lyap` at high template degrees (>= 6), because of
+> the numerical conditioning of the monomial basis, and `liouville_method`
+> on some systems (e.g. Thao8.3), with violations near the initial region.
+> This list may not be exhaustive. These gaps are diagnosed but not fixed
+> yet (see the comments in
+> `lib/templates/propSOSTemplates.ml` and `lib/liouville.ml`). Every result
+> should be checked independently, e.g. with the simulation-based harness
+> `make full-check` (see below); some templates are also incomplete or
+> unreliable on larger problems (see the notes in
+> `examples/run_examples.ml`).
 
 Seal is an OCaml library for the analysis of dynamical systems (linear,
 piecewise-linear, and polynomial) via invariant synthesis, built on
@@ -26,7 +35,8 @@ It provides:
 ## Building
 
 Seal uses [dune](https://dune.build) and depends on
-[`osdp`](https://cavale.enseeiht.fr/osdp/) and `num`.
+[`osdp`](https://cavale.enseeiht.fr/osdp/), `num`, `zarith` and
+`ocplib-simplex`.
 
 Seal currently needs `osdp` features not yet in a released version
 (the latest release on the official opam repository is 1.1.1). Until a
@@ -55,6 +65,16 @@ SOS templates, and reachability bounds).
 ```sh
 dune exec examples/run_examples.exe
 ```
+
+To check the invariants against simulated trajectories:
+
+- `make soundness-check` runs `examples/soundness_check_main.ml` on a few
+  purpose-built systems;
+- `make full-check` runs every analysis on every example system (sweeping
+  the degree or the path length k), checks each invariant against
+  simulated trajectories, writes one CSV row per run, and prints a summary
+  classifying each failure as unsound or imprecise (`make
+  full-check-summary` re-prints it from the existing CSVs).
 
 ## References
 
